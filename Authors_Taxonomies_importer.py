@@ -10,7 +10,7 @@
 # MAGIC Ce notebook permet de :
 # MAGIC - Récupérer les auteurs (users) via l'API WordPress REST
 # MAGIC - Récupérer les taxonomies custom (occupation, solution, secteur, etc.) via l'API WordPress REST
-# MAGIC - Stocker les données dans la table `cegid_website_taxonomy`
+# MAGIC - Stocker les données dans les tables `cegid_website_taxonomy` et `cegid_website_authors`
 # MAGIC - Vider et remplacer les données chaque semaine (mode TRUNCATE + INSERT)
 
 # COMMAND ----------
@@ -32,7 +32,8 @@
 DATABRICKS_CONFIG = {
     "catalog": DATABRICKS_CATALOG,
     "schema": DATABRICKS_SCHEMA,
-    "table_name": "cegid_website_taxonomy"
+    "taxonomy_table_name": "cegid_website_taxonomy",
+    "authors_table_name": "cegid_website_authors",
 }
 
 # Types de taxonomies à récupérer
@@ -94,7 +95,7 @@ from pyspark.sql.types import (
 
 # COMMAND ----------
 
-# Schéma unifié pour auteurs et taxonomies
+# Schéma unifié pour taxonomies
 TAXONOMY_SCHEMA = StructType([
     # --- IDENTIFIANTS ---
     StructField("id", LongType(), False),              # ID composite unique
@@ -107,10 +108,8 @@ TAXONOMY_SCHEMA = StructType([
     StructField("slug", StringType(), True),           # Slug URL-friendly
     StructField("description", StringType(), True),    # Description (si disponible)
 
-    # --- MÉTADONNÉES AUTEUR (null pour taxonomies) ---
-    StructField("email", StringType(), True),          # Email (users uniquement)
-    StructField("url", StringType(), True),            # URL du site/profil
-    StructField("avatar_url", StringType(), True),     # URL de l'avatar (users)
+    # --- MÉTADONNÉES TAXONOMIE ---
+    StructField("url", StringType(), True),            # URL du terme
 
     # --- HIÉRARCHIE (pour taxonomies hiérarchiques) ---
     StructField("parent_id", IntegerType(), True),     # ID du parent (categories)
@@ -123,6 +122,25 @@ TAXONOMY_SCHEMA = StructType([
     StructField("date_imported", TimestampType(), False),  # Date d'import
 
     # --- DONNÉES BRUTES ---
+    StructField("raw_json", StringType(), True),       # JSON complet de l'API
+])
+
+# COMMAND ----------
+
+# Schéma dédié pour les auteurs
+AUTHORS_SCHEMA = StructType([
+    StructField("id", LongType(), False),              # ID composite unique
+    StructField("wp_id", IntegerType(), False),        # ID WordPress original
+    StructField("site_id", StringType(), False),       # Identifiant du site (fr, es, uk, etc.)
+    StructField("name", StringType(), True),           # Nom affiché
+    StructField("slug", StringType(), True),           # Slug URL-friendly
+    StructField("email", StringType(), True),          # Email
+    StructField("job", StringType(), True),            # Poste/fonction
+    StructField("bio", StringType(), True),            # Biographie
+    StructField("photo", StringType(), True),          # URL de la photo
+    StructField("linkedin_url", StringType(), True),   # URL LinkedIn
+    StructField("language", StringType(), True),       # Code langue du site
+    StructField("date_imported", TimestampType(), False),  # Date d'import
     StructField("raw_json", StringType(), True),       # JSON complet de l'API
 ])
 
@@ -306,24 +324,23 @@ class WordPressTaxonomyConnector:
         Transforme un user WordPress en format standardisé.
         """
         wp_id = item.get('id')
-
-        # Avatar URL (gravatar)
         avatar_urls = item.get('avatar_urls', {})
-        avatar_url = avatar_urls.get('96') or avatar_urls.get('48') or avatar_urls.get('24')
+        photo_url = avatar_urls.get('96') or avatar_urls.get('48') or avatar_urls.get('24')
+        linkedin_url = get_nested_value(item, "linkedin_url") or get_nested_value(item, "linkedin")
+        job = get_nested_value(item, "job") or get_nested_value(item, "position")
+        bio = item.get('description', '')
 
         return {
             "id": calculate_taxonomy_id(wp_id, "author", self.site_id),
             "wp_id": wp_id,
             "site_id": self.site_id,
-            "taxonomy": "author",
-            "title": item.get('name') or item.get('display_name', ''),
+            "name": item.get('name') or item.get('display_name', ''),
             "slug": item.get('slug'),
-            "description": item.get('description', ''),
             "email": item.get('email'),  # Peut être null selon les permissions
-            "url": item.get('url') or item.get('link'),
-            "avatar_url": avatar_url,
-            "parent_id": None,  # Les users n'ont pas de parent
-            "count": None,  # On pourrait compter les posts par auteur
+            "job": job,
+            "bio": bio,
+            "photo": photo_url,
+            "linkedin_url": linkedin_url,
             "language": self.site_config.get("language", "fr"),
             "date_imported": datetime.now(),
             "raw_json": json.dumps(item, ensure_ascii=False),
@@ -343,9 +360,7 @@ class WordPressTaxonomyConnector:
             "title": item.get('name', ''),
             "slug": item.get('slug'),
             "description": item.get('description', ''),
-            "email": None,  # Non applicable aux taxonomies
             "url": item.get('link'),
-            "avatar_url": None,  # Non applicable aux taxonomies
             "parent_id": item.get('parent'),  # 0 si pas de parent
             "count": item.get('count'),  # Nombre de posts avec ce terme
             "language": self.site_config.get("language", "fr"),
@@ -387,6 +402,29 @@ def create_taxonomy_table_if_not_exists(catalog: str, schema: str, table_name: s
         print(f"ℹ️ Table {full_table_name} existe déjà")
 
 
+def create_authors_table_if_not_exists(catalog: str, schema: str, table_name: str):
+    """Crée la table auteurs si elle n'existe pas."""
+
+    full_table_name = f"{catalog}.{schema}.{table_name}"
+
+    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
+
+    if not spark.catalog.tableExists(full_table_name):
+        print(f"📝 Création de la table {full_table_name}...")
+
+        empty_df = spark.createDataFrame([], AUTHORS_SCHEMA)
+
+        empty_df.write \
+            .format("delta") \
+            .partitionBy("site_id") \
+            .option("delta.enableChangeDataFeed", "true") \
+            .saveAsTable(full_table_name)
+
+        print(f"✅ Table {full_table_name} créée avec succès")
+    else:
+        print(f"ℹ️ Table {full_table_name} existe déjà")
+
+
 def truncate_taxonomy_data(catalog: str, schema: str, table_name: str,
                            site_id: str = None, taxonomy: str = None):
     """
@@ -415,9 +453,39 @@ def truncate_taxonomy_data(catalog: str, schema: str, table_name: str,
     print("✅ Suppression terminée")
 
 
+def truncate_authors_data(catalog: str, schema: str, table_name: str, site_id: str = None):
+    """
+    Vide les données de la table auteurs (ou une partition spécifique).
+    """
+    full_table_name = f"{catalog}.{schema}.{table_name}"
+
+    if site_id:
+        print(f"🗑️ Suppression des données: site_id = '{site_id}'")
+        spark.sql(f"DELETE FROM {full_table_name} WHERE site_id = '{site_id}'")
+    else:
+        print(f"🗑️ Vidage complet de la table {full_table_name}")
+        spark.sql(f"TRUNCATE TABLE {full_table_name}")
+
+    print("✅ Suppression terminée")
+
+
 def insert_taxonomy_data(df: DataFrame, catalog: str, schema: str, table_name: str):
     """
     Insère les données dans la table (après truncate).
+    """
+    full_table_name = f"{catalog}.{schema}.{table_name}"
+
+    df.write \
+        .format("delta") \
+        .mode("append") \
+        .saveAsTable(full_table_name)
+
+    print(f"✅ Insertion terminée dans {full_table_name}")
+
+
+def insert_authors_data(df: DataFrame, catalog: str, schema: str, table_name: str):
+    """
+    Insère les données dans la table auteurs.
     """
     full_table_name = f"{catalog}.{schema}.{table_name}"
 
@@ -456,16 +524,19 @@ def run_taxonomy_import_pipeline(
 
     catalog = DATABRICKS_CONFIG["catalog"]
     schema = DATABRICKS_CONFIG["schema"]
-    table_name = DATABRICKS_CONFIG["table_name"]
+    taxonomy_table_name = DATABRICKS_CONFIG["taxonomy_table_name"]
+    authors_table_name = DATABRICKS_CONFIG["authors_table_name"]
 
     # Crée la table si nécessaire
-    create_taxonomy_table_if_not_exists(catalog, schema, table_name)
+    create_taxonomy_table_if_not_exists(catalog, schema, taxonomy_table_name)
+    create_authors_table_if_not_exists(catalog, schema, authors_table_name)
 
     # Filtre les taxonomies si spécifié
     types_to_import = {specific_taxonomy: taxonomy_types[specific_taxonomy]} if specific_taxonomy else taxonomy_types
 
     total_imported = 0
-    all_items = []
+    all_taxonomy_items = []
+    all_author_items = []
 
     # Boucle sur les sites
     for site_id in sites_to_import:
@@ -507,35 +578,44 @@ def run_taxonomy_import_pipeline(
             # Transforme les items
             if is_user:
                 transformed_items = [connector.transform_user(item) for item in items]
+                all_author_items.extend(transformed_items)
             else:
                 transformed_items = [connector.transform_taxonomy(item, taxonomy) for item in items]
+                all_taxonomy_items.extend(transformed_items)
 
-            all_items.extend(transformed_items)
             total_imported += len(transformed_items)
             print(f"📊 [{site_label}] {len(transformed_items)} {taxonomy}(s) préparé(s)")
 
     # Insertion des données
-    if all_items:
+    if all_taxonomy_items:
         print(f"\n{'='*60}")
-        print(f"💾 INSERTION EN BASE DE DONNÉES")
+        print(f"💾 INSERTION EN BASE DE DONNÉES (TAXONOMIES)")
         print(f"{'='*60}")
 
-        # Crée le DataFrame
-        df = spark.createDataFrame(all_items, TAXONOMY_SCHEMA)
+        df_taxonomy = spark.createDataFrame(all_taxonomy_items, TAXONOMY_SCHEMA)
 
-        # Vide les données existantes si demandé
         if truncate_before_insert:
-            if specific_taxonomy:
-                # Vide seulement la taxonomy spécifique pour les sites importés
+            if specific_taxonomy and specific_taxonomy != "author":
                 for site_id in sites_to_import:
-                    truncate_taxonomy_data(catalog, schema, table_name, site_id, specific_taxonomy)
+                    truncate_taxonomy_data(catalog, schema, taxonomy_table_name, site_id, specific_taxonomy)
             else:
-                # Vide toutes les données pour les sites importés
                 for site_id in sites_to_import:
-                    truncate_taxonomy_data(catalog, schema, table_name, site_id)
+                    truncate_taxonomy_data(catalog, schema, taxonomy_table_name, site_id)
 
-        # Insère les nouvelles données
-        insert_taxonomy_data(df, catalog, schema, table_name)
+        insert_taxonomy_data(df_taxonomy, catalog, schema, taxonomy_table_name)
+
+    if all_author_items:
+        print(f"\n{'='*60}")
+        print(f"💾 INSERTION EN BASE DE DONNÉES (AUTEURS)")
+        print(f"{'='*60}")
+
+        df_authors = spark.createDataFrame(all_author_items, AUTHORS_SCHEMA)
+
+        if truncate_before_insert and (specific_taxonomy in (None, "author")):
+            for site_id in sites_to_import:
+                truncate_authors_data(catalog, schema, authors_table_name, site_id)
+
+        insert_authors_data(df_authors, catalog, schema, authors_table_name)
 
     print(f"\n{'#'*60}")
     print(f"🎉 Import terminé! Total: {total_imported} éléments importés")
@@ -582,7 +662,16 @@ run_taxonomy_import_pipeline(sites_to_import=["fr"], truncate_before_insert=True
 # COMMAND ----------
 
 # Affiche un aperçu des données importées par site et taxonomy
-full_table = f"{DATABRICKS_CONFIG['catalog']}.{DATABRICKS_CONFIG['schema']}.{DATABRICKS_CONFIG['table_name']}"
+taxonomy_table = (
+    f"{DATABRICKS_CONFIG['catalog']}."
+    f"{DATABRICKS_CONFIG['schema']}."
+    f"{DATABRICKS_CONFIG['taxonomy_table_name']}"
+)
+authors_table = (
+    f"{DATABRICKS_CONFIG['catalog']}."
+    f"{DATABRICKS_CONFIG['schema']}."
+    f"{DATABRICKS_CONFIG['authors_table_name']}"
+)
 
 display(spark.sql(f"""
     SELECT
@@ -591,7 +680,7 @@ display(spark.sql(f"""
         language,
         COUNT(*) as nb_items,
         MAX(date_imported) as last_import
-    FROM {full_table}
+    FROM {taxonomy_table}
     GROUP BY site_id, taxonomy, language
     ORDER BY site_id, taxonomy
 """))
@@ -603,14 +692,15 @@ display(spark.sql(f"""
     SELECT
         site_id,
         wp_id,
-        title as name,
+        name,
         slug,
         email,
-        url,
-        avatar_url
-    FROM {full_table}
-    WHERE taxonomy = 'author'
-    ORDER BY site_id, title
+        job,
+        bio,
+        photo,
+        linkedin_url
+    FROM {authors_table}
+    ORDER BY site_id, name
     LIMIT 50
 """))
 
@@ -626,7 +716,7 @@ display(spark.sql(f"""
         description,
         count as nb_posts,
         parent_id
-    FROM {full_table}
+    FROM {taxonomy_table}
     WHERE taxonomy = 'occupation'
     ORDER BY site_id, count DESC
     LIMIT 50
@@ -643,7 +733,7 @@ display(spark.sql(f"""
         title as name,
         slug,
         count as nb_posts
-    FROM {full_table}
+    FROM {taxonomy_table}
     WHERE taxonomy != 'author'
     ORDER BY site_id, taxonomy, count DESC
     LIMIT 100
@@ -660,7 +750,7 @@ def get_taxonomy_stats(catalog: str = None, schema: str = None, table_name: str 
     """Affiche les statistiques de la table taxonomy."""
     catalog = catalog or DATABRICKS_CONFIG["catalog"]
     schema = schema or DATABRICKS_CONFIG["schema"]
-    table_name = table_name or DATABRICKS_CONFIG["table_name"]
+    table_name = table_name or DATABRICKS_CONFIG["taxonomy_table_name"]
     full_table = f"{catalog}.{schema}.{table_name}"
 
     return spark.sql(f"""
