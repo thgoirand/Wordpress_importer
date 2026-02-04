@@ -16,84 +16,37 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Configuration
+# MAGIC ## 1. Chargement des utilitaires communs
 
 # COMMAND ----------
 
-# Configuration WordPress
-# Credentials (utiliser Databricks Secrets en production)
-WP_BASE_URL = "https://www.cegid.com"  # Domaine racine
-WP_LOGIN = "semji"
-WP_PASSWORD = " 2VUV BySM SSrp wzJW ZFul nLaf"  # Set your password here
+# MAGIC %run ./wordpress_utils
 
-# Configuration des sites par langue
-WP_SITES = {
-    "fr": {
-        "prefix": "fr",
-        "language": "fr",
-        "label": "France"
-    },
-    "es": {
-        "prefix": "es",
-        "language": "es",
-        "label": "España"
-    },
-    "uk": {
-        "prefix": "uk",
-        "language": "en-GB",
-        "label": "United Kingdom"
-    },
-    "us": {
-        "prefix": "us",
-        "language": "en-US",
-        "label": "United States"
-    },
-    "de": {
-        "prefix": "de",
-        "language": "de",
-        "label": "Deutschland"
-    },
-    "it": {
-        "prefix": "it",
-        "language": "it",
-        "label": "Italia"
-    },
-    "pt": {
-        "prefix": "pt",
-        "language": "pt",
-        "label": "Portugal"
-    },
-}
+# COMMAND ----------
 
-# Site(s) à importer (liste ou "all" pour tous)
-WP_SITES_TO_IMPORT = ["fr"]  # Ex: ["fr", "es"] ou list(WP_SITES.keys()) pour tous
+# MAGIC %md
+# MAGIC ## 2. Configuration spécifique
 
-# Configuration Databricks
+# COMMAND ----------
+
 DATABRICKS_CONFIG = {
-    "catalog": "gdp_cdt_dev_04_gld",  # Adapter selon votre catalogue Unity Catalog
-    "schema": "sandbox_mkt",
+    "catalog": DATABRICKS_CATALOG,
+    "schema": DATABRICKS_SCHEMA,
     "table_name": "cegid_website_taxonomy"
 }
 
-# Configuration technique WordPress
-WORDPRESS_CONFIG = {
-    "base_url": WP_BASE_URL,
-    "api_endpoint": "/wp-json/wp/v2",
-    "per_page": 100,  # Maximum autorisé par l'API WordPress
-    "timeout": 30,
-    "auth": (WP_LOGIN, WP_PASSWORD)  # Basic Auth ou Application Password
-}
-
 # Types de taxonomies à récupérer
-# Note: "author" est traité séparément via /users
+# Note: "author" est traité via /wp-json/wp/v1/authors
 TAXONOMY_TYPES = {
     "author": {
-        "endpoint": "/users",
+        "endpoint": "/authors",
+        "api_endpoint": "/wp-json/wp/v1",
         "label": "Auteurs",
         "is_user": True  # Marqueur spécial pour les users
     },
     "occupation": {
         "endpoint": "/occupation",
+        "api_endpoint": "/wp-json/wp/v2",
         "label": "Occupations/Métiers"
     },
     "category": {
@@ -121,25 +74,18 @@ TAXONOMY_TYPES = {
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 2. Imports et initialisation
+# MAGIC ## 3. Imports complémentaires
 
 # COMMAND ----------
 
-import requests
 import json
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql import DataFrame
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType,
     TimestampType, LongType, BooleanType
 )
-from pyspark.sql.functions import (
-    col, lit, current_timestamp, when, max as spark_max
-)
-
-# Initialisation Spark (déjà disponible dans Databricks)
-spark = SparkSession.builder.getOrCreate()
 
 # COMMAND ----------
 
@@ -233,32 +179,6 @@ def calculate_taxonomy_id(wp_id: int, taxonomy: str, site_id: str) -> int:
 
     return site_offset + taxonomy_offset + wp_id
 
-def get_nested_value(data: dict, path: str, default=None):
-    """
-    Extrait une valeur imbriquée depuis un dictionnaire via une notation pointée.
-    """
-    if not path or not data:
-        return default
-
-    keys = path.split('.')
-    value = data
-
-    try:
-        for key in keys:
-            if isinstance(value, dict):
-                value = value.get(key)
-            elif isinstance(value, list):
-                index = int(key)
-                value = value[index] if len(value) > index else None
-            else:
-                return default
-
-            if value is None:
-                return default
-        return value
-    except (KeyError, IndexError, TypeError, ValueError):
-        return default
-
 # COMMAND ----------
 
 # MAGIC %md
@@ -291,15 +211,22 @@ class WordPressTaxonomyConnector:
             return f"{self.base_url}/{prefix}"
         return self.base_url
 
-    def _get_api_url(self, endpoint: str) -> str:
+    def _get_api_url(self, endpoint: str, api_endpoint: Optional[str] = None) -> str:
         """Construit l'URL complète de l'API pour ce site."""
-        return f"{self._get_site_url()}{self.api_endpoint}{endpoint}"
+        api_root = api_endpoint or self.api_endpoint
+        return f"{self._get_site_url()}{api_root}{endpoint}"
 
-    def _fetch_page(self, endpoint: str, page: int, params: Dict = None) -> Tuple[List[Dict], int]:
+    def _fetch_page(
+        self,
+        endpoint: str,
+        page: int,
+        params: Dict = None,
+        api_endpoint: Optional[str] = None,
+    ) -> Tuple[List[Dict], int]:
         """
         Récupère une page de résultats de l'API WordPress.
         """
-        url = self._get_api_url(endpoint)
+        url = self._get_api_url(endpoint, api_endpoint=api_endpoint)
 
         request_params = {
             "page": page,
@@ -335,7 +262,13 @@ class WordPressTaxonomyConnector:
             print(f"❌ Erreur API WordPress: {e}")
             return [], 0
 
-    def fetch_all_items(self, taxonomy: str, endpoint: str, is_user: bool = False) -> List[Dict]:
+    def fetch_all_items(
+        self,
+        taxonomy: str,
+        endpoint: str,
+        is_user: bool = False,
+        api_endpoint: Optional[str] = None,
+    ) -> List[Dict]:
         """
         Récupère tous les éléments d'une taxonomie ou tous les users.
         """
@@ -353,10 +286,10 @@ class WordPressTaxonomyConnector:
 
         site_label = self.site_config.get("label", self.site_id)
         print(f"📥 [{site_label}] Récupération des {taxonomy}...")
-        print(f"   URL: {self._get_api_url(endpoint)}")
+        print(f"   URL: {self._get_api_url(endpoint, api_endpoint=api_endpoint)}")
 
         while page <= total_pages:
-            items, total_pages = self._fetch_page(endpoint, page, params)
+            items, total_pages = self._fetch_page(endpoint, page, params, api_endpoint=api_endpoint)
 
             if not items:
                 break
@@ -557,12 +490,14 @@ def run_taxonomy_import_pipeline(
             print(f"{'='*50}")
 
             is_user = config.get("is_user", False)
+            api_endpoint = config.get("api_endpoint")
 
             # Récupère les éléments
             items = connector.fetch_all_items(
                 taxonomy=taxonomy,
                 endpoint=config["endpoint"],
-                is_user=is_user
+                is_user=is_user,
+                api_endpoint=api_endpoint
             )
 
             if not items:
