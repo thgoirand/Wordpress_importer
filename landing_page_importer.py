@@ -101,6 +101,57 @@ LANDING_PAGE_SCHEMA = StructType([
 
 # COMMAND ----------
 
+def _build_landing_page_content_raw(item: Dict) -> str:
+    """
+    Assemble le contenu HTML brut d'une landing page a partir des champs ACF.
+    Les landing pages stockent leur contenu dans acf.vah_flexible_main
+    (et non dans content.rendered qui est vide).
+
+    Blocs supportes:
+    - builder-grid > flexible_grid > grid-content : contenu principal
+    - arguments-content > arguments : blocs argumentaires
+    """
+    parts = []
+
+    # Header flexible (si present)
+    acf_header = get_nested_value(item, 'acf.vah_flexible_header', [])
+    if acf_header:
+        for block in acf_header:
+            header_data = block.get('header', {}) or {}
+            content = header_data.get('content', '')
+            if content:
+                parts.append(content)
+
+    # Main flexible
+    acf_main = get_nested_value(item, 'acf.vah_flexible_main', [])
+    if not acf_main:
+        return ""
+
+    for block in acf_main:
+        layout = block.get('acf_fc_layout', '')
+
+        # builder-grid : parcourt les sous-blocs de la grille
+        if layout == 'builder-grid':
+            for grid_item in block.get('flexible_grid', []):
+                if grid_item.get('acf_fc_layout') == 'grid-content':
+                    content = grid_item.get('content', '')
+                    if content:
+                        parts.append(content)
+
+        # arguments-content : parcourt les arguments
+        elif layout == 'arguments-content':
+            # Intro (optionnel)
+            intro = block.get('intro', '')
+            if intro:
+                parts.append(intro)
+            for arg in block.get('arguments', []):
+                content = arg.get('content', '')
+                if content:
+                    parts.append(content)
+
+    return "\n".join(parts) if parts else ""
+
+
 def transform_landing_page_item(item: Dict, site_id: str, site_config: Dict) -> Dict:
     """
     Transforme une landing page WordPress en format standardise pour Databricks.
@@ -112,7 +163,12 @@ def transform_landing_page_item(item: Dict, site_id: str, site_config: Dict) -> 
     content_type = "landing_page"
 
     # === CONTENU ===
-    content_raw = get_nested_value(item, 'content.rendered', '')
+    # Les landing pages stockent le contenu dans les champs ACF flexibles,
+    # content.rendered est generalement vide
+    content_raw = _build_landing_page_content_raw(item)
+    # Fallback sur content.rendered si les champs ACF sont vides
+    if not content_raw:
+        content_raw = get_nested_value(item, 'content.rendered', '')
     content_text = clean_html_content(content_raw)
     excerpt_raw = get_nested_value(item, 'excerpt.rendered', '')
 
@@ -142,12 +198,12 @@ def transform_landing_page_item(item: Dict, site_id: str, site_config: Dict) -> 
         # --- METADONNEES ---
         "slug": item.get('slug'),
         "url": item.get('link'),
-        "title": get_nested_value(item, 'title.rendered', ''),
+        "title": html.unescape(get_nested_value(item, 'title.rendered', '')),
 
         # --- SEO ---
         "meta_description": get_nested_value(item, 'yoast_head_json.description'),
         "meta_title": get_nested_value(item, 'yoast_head_json.title'),
-        "meta_keyword": get_nested_value(item, 'yoast_head_json.focuskw'),
+        "meta_keyword": item.get('_yoast_wpseo_focuskw') or get_nested_value(item, 'yoast_head_json.focuskw'),
         "noindex": noindex,
 
         # --- CONTENU ---

@@ -115,7 +115,7 @@ PRODUCT_FIELD_MAPPING = {
     # --- SEO (Yoast) ---
     "meta_description": "yoast_head_json.description",
     "meta_title": "yoast_head_json.title",
-    "meta_keyword": "yoast_head_json.focuskw",
+    "meta_keyword": "_yoast_wpseo_focuskw",             # Focus keyword Yoast (top-level field)
     "noindex": "yoast_head_json.robots.index",
 
     # --- CONTENU (assemble depuis les champs ACF) ---
@@ -236,12 +236,12 @@ def transform_product_item(item: Dict, site_id: str, site_config: Dict) -> Dict:
         # --- METADONNEES ---
         "slug": item.get('slug'),
         "url": item.get('link'),
-        "title": get_nested_value(item, 'title.rendered', ''),
+        "title": html.unescape(get_nested_value(item, 'title.rendered', '')),
 
         # --- SEO ---
         "meta_description": get_nested_value(item, 'yoast_head_json.description'),
         "meta_title": get_nested_value(item, 'yoast_head_json.title'),
-        "meta_keyword": get_nested_value(item, 'yoast_head_json.focuskw'),
+        "meta_keyword": item.get('_yoast_wpseo_focuskw') or get_nested_value(item, 'yoast_head_json.focuskw'),
         "noindex": noindex,
 
         # --- CONTENU ---
