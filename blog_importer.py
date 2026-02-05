@@ -144,6 +144,9 @@ CONTENT_SCHEMA = StructType([
 
     # --- DONNEES BRUTES ---
     StructField("raw_json", StringType(), True),
+
+    # --- AI FORMATTING ---
+    StructField("date_formatted", TimestampType(), True),
 ])
 
 # COMMAND ----------
@@ -229,6 +232,9 @@ def transform_content_item(item: Dict, content_type: str, site_id: str, site_con
 
         # --- DONNEES BRUTES ---
         "raw_json": json.dumps(item, ensure_ascii=False),
+
+        # --- AI FORMATTING ---
+        "date_formatted": None,
     }
 
 # COMMAND ----------
@@ -447,79 +453,10 @@ display(spark.sql(f"""
 
 # MAGIC %md
 # MAGIC ## 9. AI functions (optionnel)
-
-# COMMAND ----------
-
-# Configuration pour les AI functions
-SOURCE_TABLE = full_table
-
-# 1. Identifier les elements a traiter
-pre_update_query = f"""
-SELECT
-    id,
-    title,
-    slug,
-    date_modified,
-    CASE
-        WHEN content_text IS NULL OR content_text = '' THEN 'Nouveau'
-        ELSE 'Update'
-    END AS statut
-FROM {SOURCE_TABLE}
-WHERE
-    raw_json IS NOT NULL AND raw_json != ''
-    AND (
-        content_text IS NULL
-        OR content_text = ''
-        OR (date_modified >= CURRENT_DATE() - INTERVAL 7 DAYS
-            AND date_modified > COALESCE(date_formatted, '1900-01-01'))
-    )
-ORDER BY date_modified DESC
-"""
-
-df_to_process = spark.sql(pre_update_query)
-count = df_to_process.count()
-
-print(f"{count} elements a traiter :")
-display(df_to_process)
-
-# COMMAND ----------
-
-# 2. MERGE avec AI_QUERY (decommenter pour executer)
-# if count > 0:
-#     merge_query = f"""
-#     MERGE INTO {SOURCE_TABLE} AS target
-#     USING (
-#         SELECT
-#             id,
-#             AI_QUERY(
-#                 'databricks-claude-haiku-4-5',
-#                 CONCAT(
-#                     'Tu es un expert en formatage de contenu web. ',
-#                     'Convertis ce JSON WordPress en markdown propre et structure. ',
-#                     'Utilise des titres (##, ###), des listes, et formate correctement les liens. ',
-#                     'Retourne uniquement le markdown, sans explications. ',
-#                     'JSON: ',
-#                     raw_json
-#                 )
-#             ) AS new_content_text,
-#             CURRENT_TIMESTAMP() AS new_date_formatted
-#         FROM {SOURCE_TABLE}
-#         WHERE
-#             raw_json IS NOT NULL AND raw_json != ''
-#             AND (
-#                 content_text IS NULL
-#                 OR content_text = ''
-#                 OR (date_modified >= CURRENT_DATE() - INTERVAL 7 DAYS
-#                     AND date_modified > COALESCE(date_formatted, '1900-01-01'))
-#             )
-#     ) AS source
-#     ON target.id = source.id
-#     WHEN MATCHED THEN UPDATE SET
-#         content_text = source.new_content_text,
-#         date_formatted = source.new_date_formatted
-#     """
-#
-#     spark.sql(merge_query)
-#     print("MERGE termine")
-# else:
-#     print("Aucun element a traiter")
+# MAGIC
+# MAGIC Le formatage AI des contenus est realise dans un notebook dedie `ai_formatter`
+# MAGIC afin d'eviter les timeouts du serverless compute sur de gros volumes.
+# MAGIC
+# MAGIC Le notebook traite les elements par batch de 5 via AI_QUERY.
+# MAGIC
+# MAGIC **Usage:** Executer `ai_formatter` apres l'import des contenus.
