@@ -101,18 +101,66 @@ LANDING_PAGE_SCHEMA = StructType([
 
 # COMMAND ----------
 
+def extract_acf_content(item: Dict) -> str:
+    """
+    Reconstruit le contenu HTML a partir des blocs ACF vah_flexible_main.
+
+    Les landing pages n'ont pas de contenu dans content.rendered,
+    le contenu reel est dans les blocs ACF flexibles :
+    - wysiwyg-section : contenu HTML dans le champ 'wysiwyg'
+    - testimonial-cards : temoignages clients (auteur, job, citation)
+    - product-section : section produits avec contenu + IDs produits
+    """
+    acf_main = get_nested_value(item, 'acf.vah_flexible_main', [])
+    if not acf_main:
+        return ''
+
+    html_parts = []
+
+    for block in acf_main:
+        layout = block.get('acf_fc_layout', '')
+
+        if layout == 'wysiwyg-section':
+            wysiwyg = block.get('wysiwyg', '')
+            if wysiwyg:
+                html_parts.append(wysiwyg)
+
+        elif layout == 'testimonial-cards':
+            cards = block.get('testimonial_cards', [])
+            for card in cards:
+                author = card.get('author', '').strip()
+                job = card.get('job', '')
+                content = card.get('content', '')
+                if content:
+                    html_parts.append(
+                        f'<blockquote><p>{content}</p>'
+                        f'<cite>{author}, {job}</cite></blockquote>'
+                    )
+
+        elif layout == 'product-section':
+            content = block.get('content', '')
+            if content:
+                html_parts.append(content)
+
+    return '\n'.join(html_parts)
+
+
 def transform_landing_page_item(item: Dict, site_id: str, site_config: Dict) -> Dict:
     """
     Transforme une landing page WordPress en format standardise pour Databricks.
 
     Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website
     Content type: landing_page (offset 20_000_000)
+
+    Note: content.rendered est vide pour ce type de contenu.
+    Le contenu reel est reconstruit depuis acf.vah_flexible_main.
     """
     wp_id = item.get('id')
     content_type = "landing_page"
 
     # === CONTENU ===
-    content_raw = get_nested_value(item, 'content.rendered', '')
+    # content.rendered est vide, on reconstruit depuis les blocs ACF
+    content_raw = extract_acf_content(item)
     content_text = clean_html_content(content_raw)
     excerpt_raw = get_nested_value(item, 'excerpt.rendered', '')
 
@@ -128,7 +176,7 @@ def transform_landing_page_item(item: Dict, site_id: str, site_config: Dict) -> 
 
     # === TAXONOMIES CUSTOM ===
     custom_taxonomies = {}
-    for key in ['occupation', 'solution', 'secteur', 'product_type']:
+    for key in ['occupation', 'solution', 'secteur', 'product_type', 'company']:
         if key in item and isinstance(item[key], list) and item[key]:
             custom_taxonomies[key] = item[key]
 
