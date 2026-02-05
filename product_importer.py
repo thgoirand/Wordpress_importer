@@ -6,7 +6,7 @@
 # MAGIC Ce notebook permet de :
 # MAGIC - Recuperer les pages produit via l'API WordPress REST `/wp-json/wp/v2/product`
 # MAGIC - Extraire les champs ACF flexibles (header, arguments, features, resources)
-# MAGIC - Stocker les produits dans la table `cegid_products`
+# MAGIC - Stocker les produits dans la table `cegid_website` (content_type = "product")
 # MAGIC - Supporter l'import incremental via le tracking des IDs
 
 # COMMAND ----------
@@ -25,11 +25,11 @@
 
 # COMMAND ----------
 
-# Configuration Databricks pour les produits
+# Configuration Databricks pour les produits (meme table que blog_importer)
 PRODUCT_TABLE_CONFIG = {
     "catalog": DATABRICKS_CATALOG,
     "schema": DATABRICKS_SCHEMA,
-    "table_name": "cegid_products"
+    "table_name": "cegid_website"
 }
 
 # Endpoint API pour les produits
@@ -38,26 +38,12 @@ PRODUCT_ENDPOINT = "/product"
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Schema des produits
+# MAGIC ## 3. Schema cegid_website (identique a blog_importer)
 
 # COMMAND ----------
 
-# Schema pour les arguments produit (pictogrammes + stats)
-PRODUCT_ARGUMENT_SCHEMA = StructType([
-    StructField("pictogram_icon", StringType(), True),
-    StructField("content", StringType(), True),
-])
-
-# Schema pour les sections de fonctionnalites produit
-PRODUCT_FEATURE_SECTION_SCHEMA = StructType([
-    StructField("alignement", StringType(), True),
-    StructField("media_type", StringType(), True),
-    StructField("image", IntegerType(), True),
-    StructField("content", StringType(), True),
-])
-
-# Schema principal pour les produits
-PRODUCT_SCHEMA = StructType([
+# Schema PySpark pour les contenus (identique a blog_importer)
+CONTENT_SCHEMA = StructType([
     # --- IDENTIFIANTS ---
     StructField("id", LongType(), False),
     StructField("wp_id", IntegerType(), False),
@@ -68,53 +54,49 @@ PRODUCT_SCHEMA = StructType([
     StructField("slug", StringType(), True),
     StructField("url", StringType(), True),
     StructField("title", StringType(), True),
-    StructField("template", StringType(), True),
 
-    # --- SEO (Yoast) ---
+    # --- SEO ---
     StructField("meta_description", StringType(), True),
     StructField("meta_title", StringType(), True),
-    StructField("og_image_url", StringType(), True),
-    StructField("schema_json", StringType(), True),  # JSON-LD schema
+    StructField("meta_keyword", StringType(), True),
+    StructField("noindex", BooleanType(), True),
+
+    # --- CONTENU ---
+    StructField("content_raw", StringType(), True),
+    StructField("content_text", StringType(), True),
+    StructField("excerpt", StringType(), True),
 
     # --- TAXONOMIES ---
-    StructField("occupation", ArrayType(IntegerType()), True),
-
-    # --- ACF: HEADER FLEXIBLE ---
-    StructField("header_content", StringType(), True),
-    StructField("header_content_display", StringType(), True),
-    StructField("header_image_desktop", IntegerType(), True),
-    StructField("header_form_config", StringType(), True),  # JSON stringifie
-
-    # --- ACF: PRODUCT ARGUMENTS ---
-    StructField("product_arguments", ArrayType(PRODUCT_ARGUMENT_SCHEMA), True),
-
-    # --- ACF: PRODUCT FEATURES ---
-    StructField("product_features", ArrayType(PRODUCT_FEATURE_SECTION_SCHEMA), True),
-
-    # --- ACF: PRODUCT RESOURCES ---
-    StructField("resources_list", ArrayType(IntegerType()), True),
-
-    # --- ACF: RELATED PRODUCTS ---
-    StructField("related_products", ArrayType(IntegerType()), True),
+    StructField("categories", ArrayType(IntegerType()), True),
+    StructField("tags", ArrayType(IntegerType()), True),
+    StructField("custom_taxonomies", MapType(StringType(), ArrayType(IntegerType())), True),
 
     # --- DATES ---
     StructField("date_published", TimestampType(), True),
     StructField("date_modified", TimestampType(), True),
     StructField("date_imported", TimestampType(), False),
 
+    # --- AUTEUR & STATUT ---
+    StructField("status", StringType(), True),
+    StructField("author_id", IntegerType(), True),
+
+    # --- MEDIA ---
+    StructField("featured_image_url", StringType(), True),
+
     # --- LANGUE ---
     StructField("language", StringType(), True),
 
     # --- DONNEES BRUTES ---
     StructField("raw_json", StringType(), True),
-    StructField("raw_acf_header", StringType(), True),
-    StructField("raw_acf_main", StringType(), True),
+
+    # --- AI FORMATTING ---
+    StructField("date_formatted", TimestampType(), True),
 ])
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4. Mapping des champs produit
+# MAGIC ## 4. Mapping des champs produit vers cegid_website
 
 # COMMAND ----------
 
@@ -129,47 +111,40 @@ PRODUCT_FIELD_MAPPING = {
     "slug": "slug",
     "url": "link",
     "title": "title.rendered",
-    "template": "template",
 
     # --- SEO (Yoast) ---
     "meta_description": "yoast_head_json.description",
     "meta_title": "yoast_head_json.title",
-    "og_image_url": "yoast_head_json.og_image.0.url",
-    "schema_json": "yoast_head_json.schema",
+    "meta_keyword": "yoast_head_json.focuskw",
+    "noindex": "yoast_head_json.robots.index",
+
+    # --- CONTENU (assemble depuis les champs ACF) ---
+    "content_raw": None,                 # Assemble depuis ACF header + main
+    "content_text": None,                # Version texte nettoyee
+    "excerpt": None,                     # header_content_display
 
     # --- TAXONOMIES ---
-    "occupation": "occupation",
-
-    # --- ACF: HEADER FLEXIBLE ---
-    "header_content": "acf.vah_flexible_header.0.header.content",
-    "header_content_display": "acf.vah_flexible_header.0.header.content_display",
-    "header_image_desktop": "acf.vah_flexible_header.0.header.image_destktop",
-    "header_form_config": "acf.vah_flexible_header.0.header.form",
-
-    # --- ACF: PRODUCT ARGUMENTS ---
-    "product_arguments": "acf.vah_flexible_main",  # Extraction custom (layout: product-arguments)
-
-    # --- ACF: PRODUCT FEATURES ---
-    "product_features": "acf.vah_flexible_main",   # Extraction custom (layout: product-features)
-
-    # --- ACF: PRODUCT RESOURCES ---
-    "resources_list": "acf.vah_flexible_main",     # Extraction custom (layout: product-resources)
-
-    # --- ACF: RELATED PRODUCTS ---
-    "related_products": "acf.vah_flexible_main",   # Extraction custom (layout: product-others)
+    "categories": None,                  # Pas de categories pour les produits
+    "tags": None,                        # Pas de tags pour les produits
+    "custom_taxonomies": None,           # occupation, etc.
 
     # --- DATES ---
     "date_published": "date",
     "date_modified": "modified",
     "date_imported": None,               # datetime.now()
 
+    # --- AUTEUR & STATUT ---
+    "status": "status",
+    "author_id": "author",
+
+    # --- MEDIA ---
+    "featured_image_url": "yoast_head_json.og_image.0.url",
+
     # --- LANGUE ---
     "language": "lang",
 
     # --- DONNEES BRUTES ---
-    "raw_json": None,
-    "raw_acf_header": "acf.vah_flexible_header",
-    "raw_acf_main": "acf.vah_flexible_main",
+    "raw_json": None,                    # JSON complet (inclut tous les champs ACF)
 }
 
 # COMMAND ----------
@@ -179,12 +154,42 @@ PRODUCT_FIELD_MAPPING = {
 
 # COMMAND ----------
 
+def _build_product_content_raw(header_content, acf_main):
+    """
+    Assemble le contenu HTML brut d'un produit a partir des champs ACF.
+    Combine le header et les blocs principaux (arguments, features).
+    """
+    parts = []
+
+    if header_content:
+        parts.append(header_content)
+
+    # Ajoute les arguments produit
+    for block in acf_main:
+        if block.get('acf_fc_layout') == 'product-arguments':
+            for arg in block.get('arguments', []):
+                content = arg.get('content', '')
+                if content:
+                    parts.append(content)
+
+    # Ajoute les features produit
+    for block in acf_main:
+        if block.get('acf_fc_layout') == 'product-features':
+            for section in block.get('sections', []):
+                content = section.get('content', '')
+                if content:
+                    parts.append(content)
+
+    return "\n".join(parts) if parts else None
+
+
 def transform_product_item(item: Dict, site_id: str, site_config: Dict) -> Dict:
     """
-    Transforme un item produit WordPress avec ACF en format standardise pour Databricks.
+    Transforme un item produit WordPress avec ACF en format standardise pour cegid_website.
 
-    Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_products
-    Gere les champs ACF specifiques (vah_flexible_header, vah_flexible_main)
+    Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website
+    Les champs ACF specifiques sont assembles dans content_raw/content_text
+    et les donnees brutes completes sont conservees dans raw_json.
     """
     wp_id = item.get('id')
     content_type = "product"
@@ -199,54 +204,27 @@ def transform_product_item(item: Dict, site_id: str, site_config: Dict) -> Dict:
 
     header_content = header_data.get('content', '')
     header_content_display = header_data.get('content_display', '')
-    header_image_desktop = header_data.get('image_destktop')  # Typo dans l'API
-    header_form_config = json.dumps(header_data.get('form', {}), ensure_ascii=False) if header_data.get('form') else None
 
     # === ACF: Extraction du main flexible ===
     acf_main = get_nested_value(item, 'acf.vah_flexible_main', [])
 
-    # --- Product Arguments (layout: product-arguments) ---
-    product_arguments = []
-    for block in acf_main:
-        if block.get('acf_fc_layout') == 'product-arguments':
-            arguments = block.get('arguments', [])
-            for arg in arguments:
-                product_arguments.append({
-                    "pictogram_icon": arg.get('pictogram_icon', ''),
-                    "content": arg.get('content', '')
-                })
-
-    # --- Product Features (layout: product-features) ---
-    product_features = []
-    for block in acf_main:
-        if block.get('acf_fc_layout') == 'product-features':
-            sections = block.get('sections', [])
-            for section in sections:
-                product_features.append({
-                    "alignement": section.get('alignement', ''),
-                    "media_type": section.get('media_type', ''),
-                    "image": section.get('image'),
-                    "content": section.get('content', '')
-                })
-
-    # --- Product Resources (layout: product-resources) ---
-    resources_list = []
-    for block in acf_main:
-        if block.get('acf_fc_layout') == 'product-resources':
-            resources_list = block.get('resources_list', [])
-            break
-
-    # --- Related Products (layout: product-others) ---
-    related_products = []
-    for block in acf_main:
-        if block.get('acf_fc_layout') == 'product-others':
-            related_products = block.get('products_section', [])
-            break
+    # === CONTENU: Assemble depuis les champs ACF ===
+    content_raw = _build_product_content_raw(header_content, acf_main)
+    content_text = clean_html_content(content_raw) if content_raw else None
+    excerpt = clean_html_content(header_content_display) if header_content_display else None
 
     # === SEO: Yoast ===
     og_image = get_nested_value(item, 'yoast_head_json.og_image.0.url')
-    schema_data = get_nested_value(item, 'yoast_head_json.schema')
-    schema_json = json.dumps(schema_data, ensure_ascii=False) if schema_data else None
+
+    # === SEO: noindex ===
+    robots_index = get_nested_value(item, 'yoast_head_json.robots.index')
+    noindex = robots_index == 'noindex' if robots_index else None
+
+    # === TAXONOMIES CUSTOM ===
+    custom_taxonomies = {}
+    for key in ['occupation', 'solution', 'secteur', 'product_type']:
+        if key in item and isinstance(item[key], list) and item[key]:
+            custom_taxonomies[key] = item[key]
 
     return {
         # --- IDENTIFIANTS ---
@@ -259,47 +237,43 @@ def transform_product_item(item: Dict, site_id: str, site_config: Dict) -> Dict:
         "slug": item.get('slug'),
         "url": item.get('link'),
         "title": get_nested_value(item, 'title.rendered', ''),
-        "template": item.get('template', ''),
 
-        # --- SEO (Yoast) ---
+        # --- SEO ---
         "meta_description": get_nested_value(item, 'yoast_head_json.description'),
         "meta_title": get_nested_value(item, 'yoast_head_json.title'),
-        "og_image_url": og_image,
-        "schema_json": schema_json,
+        "meta_keyword": get_nested_value(item, 'yoast_head_json.focuskw'),
+        "noindex": noindex,
+
+        # --- CONTENU ---
+        "content_raw": content_raw,
+        "content_text": content_text,
+        "excerpt": excerpt,
 
         # --- TAXONOMIES ---
-        "occupation": item.get('occupation', []),
-
-        # --- ACF: HEADER FLEXIBLE ---
-        "header_content": header_content,
-        "header_content_display": header_content_display,
-        "header_image_desktop": header_image_desktop,
-        "header_form_config": header_form_config,
-
-        # --- ACF: PRODUCT ARGUMENTS ---
-        "product_arguments": product_arguments if product_arguments else None,
-
-        # --- ACF: PRODUCT FEATURES ---
-        "product_features": product_features if product_features else None,
-
-        # --- ACF: PRODUCT RESOURCES ---
-        "resources_list": resources_list if resources_list else None,
-
-        # --- ACF: RELATED PRODUCTS ---
-        "related_products": related_products if related_products else None,
+        "categories": [],
+        "tags": [],
+        "custom_taxonomies": custom_taxonomies if custom_taxonomies else None,
 
         # --- DATES ---
         "date_published": parse_wp_date(item.get('date')),
         "date_modified": parse_wp_date(item.get('modified')),
         "date_imported": datetime.now(),
 
+        # --- AUTEUR & STATUT ---
+        "status": item.get('status'),
+        "author_id": item.get('author'),
+
+        # --- MEDIA ---
+        "featured_image_url": og_image,
+
         # --- LANGUE ---
         "language": language,
 
         # --- DONNEES BRUTES ---
         "raw_json": json.dumps(item, ensure_ascii=False),
-        "raw_acf_header": json.dumps(acf_header, ensure_ascii=False) if acf_header else None,
-        "raw_acf_main": json.dumps(acf_main, ensure_ascii=False) if acf_main else None,
+
+        # --- AI FORMATTING ---
+        "date_formatted": None,
     }
 
 # COMMAND ----------
@@ -311,15 +285,16 @@ def transform_product_item(item: Dict, site_id: str, site_config: Dict) -> Dict:
 
 def upsert_products(df: DataFrame, catalog: str, schema: str, table_name: str):
     """
-    Upsert (MERGE) des produits dans la table Delta.
+    Upsert (MERGE) des produits dans la table cegid_website.
     Met a jour les produits existants, insere les nouveaux.
+    Memes champs que upsert_content dans blog_importer.
     """
     full_table_name = f"{catalog}.{schema}.{table_name}"
 
     # Cree une vue temporaire
     df.createOrReplaceTempView("new_products")
 
-    # MERGE pour upsert avec tous les champs produit
+    # MERGE pour upsert (meme logique que blog_importer)
     spark.sql(f"""
         MERGE INTO {full_table_name} AS target
         USING new_products AS source
@@ -327,27 +302,18 @@ def upsert_products(df: DataFrame, catalog: str, schema: str, table_name: str):
         WHEN MATCHED THEN
             UPDATE SET
                 title = source.title,
-                slug = source.slug,
-                url = source.url,
-                template = source.template,
+                content_raw = source.content_raw,
+                content_text = source.content_text,
+                excerpt = source.excerpt,
                 meta_description = source.meta_description,
-                meta_title = source.meta_title,
-                og_image_url = source.og_image_url,
-                schema_json = source.schema_json,
-                occupation = source.occupation,
-                header_content = source.header_content,
-                header_content_display = source.header_content_display,
-                header_image_desktop = source.header_image_desktop,
-                header_form_config = source.header_form_config,
-                product_arguments = source.product_arguments,
-                product_features = source.product_features,
-                resources_list = source.resources_list,
-                related_products = source.related_products,
+                categories = source.categories,
+                tags = source.tags,
+                custom_taxonomies = source.custom_taxonomies,
                 date_modified = source.date_modified,
                 date_imported = source.date_imported,
-                raw_json = source.raw_json,
-                raw_acf_header = source.raw_acf_header,
-                raw_acf_main = source.raw_acf_main
+                status = source.status,
+                featured_image_url = source.featured_image_url,
+                raw_json = source.raw_json
         WHEN NOT MATCHED THEN
             INSERT *
     """)
@@ -367,7 +333,7 @@ def run_product_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPORT,
     Execute le pipeline d'import des produits pour un ou plusieurs sites.
 
     Route API: /wp-json/wp/v2/product
-    Table cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_products
+    Table cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website (content_type = "product")
 
     Args:
         sites_to_import: Liste des site_id a importer (ex: ["fr", "es"])
@@ -377,13 +343,13 @@ def run_product_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPORT,
     schema = PRODUCT_TABLE_CONFIG["schema"]
     table_name = PRODUCT_TABLE_CONFIG["table_name"]
 
-    # Cree la table produits si necessaire
+    # Cree la table cegid_website si necessaire (meme schema que blog_importer)
     create_delta_table(
         catalog=catalog,
         schema=schema,
         table_name=table_name,
-        spark_schema=PRODUCT_SCHEMA,
-        partition_by=["site_id"]
+        spark_schema=CONTENT_SCHEMA,
+        partition_by=["site_id", "content_type"]
     )
 
     total_imported = 0
@@ -433,8 +399,8 @@ def run_product_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPORT,
             for item in items
         ]
 
-        # Cree le DataFrame avec le schema produit
-        df = spark.createDataFrame(transformed_items, PRODUCT_SCHEMA)
+        # Cree le DataFrame avec le schema cegid_website
+        df = spark.createDataFrame(transformed_items, CONTENT_SCHEMA)
 
         # Upsert dans la table produits
         upsert_products(df, catalog, schema, table_name)
@@ -491,54 +457,39 @@ display(spark.sql(f"""
         MAX(date_published) as newest,
         MAX(date_imported) as last_import
     FROM {product_table}
+    WHERE content_type = 'product'
     GROUP BY site_id, language
     ORDER BY site_id
 """))
 
 # COMMAND ----------
 
-# Apercu des produits avec leurs donnees ACF
+# Apercu des produits avec leurs donnees
 display(spark.sql(f"""
     SELECT
         site_id,
         wp_id,
         title,
         url,
-        template,
         meta_title,
-        SIZE(occupation) as nb_occupations,
-        SIZE(product_arguments) as nb_arguments,
-        SIZE(product_features) as nb_features,
-        SIZE(resources_list) as nb_resources,
-        SIZE(related_products) as nb_related,
+        LEFT(content_text, 200) as content_preview,
         date_published
     FROM {product_table}
+    WHERE content_type = 'product'
     ORDER BY site_id, date_published DESC
     LIMIT 20
 """))
 
 # COMMAND ----------
 
-# Detail des arguments produit
+# Repartition des contenus par type dans cegid_website
 display(spark.sql(f"""
     SELECT
-        wp_id,
-        title,
-        EXPLODE(product_arguments) as argument
+        content_type,
+        site_id,
+        COUNT(*) as nb_items,
+        MAX(date_imported) as last_import
     FROM {product_table}
-    WHERE product_arguments IS NOT NULL
-    LIMIT 10
-"""))
-
-# COMMAND ----------
-
-# Detail des features produit
-display(spark.sql(f"""
-    SELECT
-        wp_id,
-        title,
-        EXPLODE(product_features) as feature
-    FROM {product_table}
-    WHERE product_features IS NOT NULL
-    LIMIT 10
+    GROUP BY content_type, site_id
+    ORDER BY content_type, site_id
 """))
