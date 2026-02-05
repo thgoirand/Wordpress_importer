@@ -245,6 +245,7 @@ def calculate_composite_id(wp_id: int, content_type: str, site_id: str) -> int:
         "product": 30_000_000,
         "custom_post_1": 40_000_000,
         "custom_post_2": 50_000_000,
+        "study_case": 60_000_000,
     }
 
     site_offset = SITE_OFFSETS.get(site_id, 9_000_000_000)
