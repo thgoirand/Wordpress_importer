@@ -322,13 +322,33 @@ class WordPressTaxonomyConnector:
     def transform_user(self, item: Dict) -> Dict:
         """
         Transforme un user WordPress en format standardisé.
+
+        Les champs job, bio, linkedin_url et photo sont extraits depuis
+        l'objet ACF de la réponse API (item.acf.*), avec fallback sur
+        les champs top-level pour rétrocompatibilité.
         """
         wp_id = item.get('id')
-        avatar_urls = item.get('avatar_urls', {})
-        photo_url = avatar_urls.get('96') or avatar_urls.get('48') or avatar_urls.get('24')
-        linkedin_url = get_nested_value(item, "linkedin_url") or get_nested_value(item, "linkedin")
-        job = get_nested_value(item, "job") or get_nested_value(item, "position")
-        bio = item.get('description', '')
+
+        # Photo: priorité ACF photo (ID média), puis avatar_urls
+        acf_photo = get_nested_value(item, "acf.photo")
+        if acf_photo and isinstance(acf_photo, str):
+            photo_url = acf_photo
+        elif acf_photo and isinstance(acf_photo, int):
+            # ACF photo est un ID média WordPress, on le stocke comme string
+            photo_url = str(acf_photo)
+        else:
+            avatar_urls = item.get('avatar_urls', {})
+            photo_url = avatar_urls.get('96') or avatar_urls.get('48') or avatar_urls.get('24')
+
+        # ACF fields avec fallback top-level
+        linkedin_url = (get_nested_value(item, "acf.linkedin_url")
+                        or get_nested_value(item, "linkedin_url")
+                        or get_nested_value(item, "linkedin"))
+        job = (get_nested_value(item, "acf.job")
+               or get_nested_value(item, "job")
+               or get_nested_value(item, "position"))
+        bio = (get_nested_value(item, "acf.bio")
+               or item.get('description', ''))
 
         return {
             "id": calculate_taxonomy_id(wp_id, "author", self.site_id),
