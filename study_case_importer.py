@@ -65,14 +65,14 @@ STUDY_CASE_FIELD_MAPPING = {
     "noindex": "yoast_head_json.robots.index",       # Robot noindex
 
     # --- CONTENU ---
-    "content_raw": "content.rendered",
+    "content_raw": None,                 # Assemble depuis acf.vah_flexible_main (wysiwyg blocks)
     "content_text": None,                # Calcule (HTML nettoye)
     "excerpt": "excerpt.rendered",
 
     # --- TAXONOMIES ---
-    "categories": "categories",
-    "tags": "tags",
-    "custom_taxonomies": None,           # Extraction custom
+    "categories": None,                  # Study cases n'ont pas de categories
+    "tags": None,                        # Study cases n'ont pas de tags
+    "custom_taxonomies": None,           # occupation, company, solution, secteur, product_type
 
     # --- DATES ---
     "date_published": "date",
@@ -84,7 +84,7 @@ STUDY_CASE_FIELD_MAPPING = {
     "author_id": "author",
 
     # --- MEDIA ---
-    "featured_image_url": "_embedded.wp:featuredmedia.0.source_url",
+    "featured_image_url": "yoast_head_json.og_image.0.url",  # Fallback fiable vs _embedded
 
     # --- LANGUE ---
     "language": "lang",
@@ -151,23 +151,47 @@ STUDY_CASE_SCHEMA = StructType([
 
 # COMMAND ----------
 
+def _build_study_case_content_raw(acf_main):
+    """
+    Assemble le contenu HTML brut d'un study case a partir des blocs ACF.
+    Extrait le contenu des blocs wysiwyg-section (contenu editorial principal).
+    Les blocs testimonial-cards et product-section sont ignores (donnees structurees
+    conservees dans raw_json).
+    """
+    parts = []
+
+    for block in acf_main:
+        layout = block.get('acf_fc_layout', '')
+
+        if layout == 'wysiwyg-section':
+            content = block.get('wysiwyg', '')
+            if content:
+                parts.append(content)
+
+    return "\n".join(parts) if parts else None
+
+
 def transform_study_case_item(item: Dict, site_id: str, site_config: Dict) -> Dict:
     """
     Transforme un item study case WordPress en format standardise pour Databricks.
 
     Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website
     Content type: study_case
+
+    Note: Le contenu principal est dans acf.vah_flexible_main (blocs wysiwyg-section),
+    pas dans content.rendered qui est vide pour les study cases.
     """
     wp_id = item.get('id')
     content_type = STUDY_CASE_CONTENT_TYPE
 
-    # === CONTENU ===
-    content_raw = get_nested_value(item, 'content.rendered', '')
-    content_text = clean_html_content(content_raw)
+    # === CONTENU: Assemble depuis les blocs ACF ===
+    acf_main = get_nested_value(item, 'acf.vah_flexible_main', [])
+    content_raw = _build_study_case_content_raw(acf_main)
+    content_text = clean_html_content(content_raw) if content_raw else None
     excerpt_raw = get_nested_value(item, 'excerpt.rendered', '')
 
-    # === MEDIA ===
-    featured_image_url = get_nested_value(item, '_embedded.wp:featuredmedia.0.source_url')
+    # === MEDIA: og_image plus fiable que _embedded ===
+    featured_image_url = get_nested_value(item, 'yoast_head_json.og_image.0.url')
 
     # === LANGUE ===
     language = item.get('lang') or site_config.get("language", "fr")
@@ -176,9 +200,12 @@ def transform_study_case_item(item: Dict, site_id: str, site_config: Dict) -> Di
     robots_index = get_nested_value(item, 'yoast_head_json.robots.index')
     noindex = robots_index == 'noindex' if robots_index else None
 
+    # === SEO: meta_keyword (champ racine, absent de yoast_head_json) ===
+    meta_keyword = item.get('_yoast_wpseo_focuskw') or None
+
     # === TAXONOMIES CUSTOM ===
     custom_taxonomies = {}
-    for key in ['occupation', 'solution', 'secteur', 'product_type']:
+    for key in ['occupation', 'company', 'solution', 'secteur', 'product_type']:
         if key in item and isinstance(item[key], list) and item[key]:
             custom_taxonomies[key] = item[key]
 
@@ -206,8 +233,8 @@ def transform_study_case_item(item: Dict, site_id: str, site_config: Dict) -> Di
         "excerpt": clean_html_content(excerpt_raw),
 
         # --- TAXONOMIES ---
-        "categories": item.get('categories', []),
-        "tags": item.get('tags', []),
+        "categories": [],
+        "tags": [],
         "custom_taxonomies": custom_taxonomies if custom_taxonomies else None,
 
         # --- DATES ---
