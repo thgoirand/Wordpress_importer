@@ -407,9 +407,32 @@ def run_landing_page_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IM
 
 # COMMAND ----------
 
-# Affiche un apercu des landing pages importees par site
+# Diagnostics rapides pour comprendre l'absence de lignes
 full_table = f"{LANDING_PAGE_TABLE_CONFIG['catalog']}.{LANDING_PAGE_TABLE_CONFIG['schema']}.{LANDING_PAGE_TABLE_CONFIG['table_name']}"
+print(f"Table cible: {full_table}")
 
+display(spark.sql(f"""
+    SELECT
+        content_type,
+        COUNT(*) as nb_items
+    FROM {full_table}
+    GROUP BY content_type
+    ORDER BY nb_items DESC
+"""))
+
+display(spark.sql(f"""
+    SELECT
+        site_id,
+        content_type,
+        COUNT(*) as nb_items,
+        MIN(date_imported) as first_import,
+        MAX(date_imported) as last_import
+    FROM {full_table}
+    GROUP BY site_id, content_type
+    ORDER BY site_id, content_type
+"""))
+
+# Affiche un apercu des landing pages importees par site
 display(spark.sql(f"""
     SELECT
         site_id,
@@ -442,6 +465,22 @@ display(spark.sql(f"""
     WHERE content_type = 'landing_page'
     ORDER BY site_id, date_published DESC
     LIMIT 20
+"""))
+
+# COMMAND ----------
+
+# Diagnostic si aucune landing page n'apparait: verifier un echantillon brut
+display(spark.sql(f"""
+    SELECT
+        site_id,
+        wp_id,
+        status,
+        date_imported,
+        raw_json
+    FROM {full_table}
+    WHERE content_type = 'landing_page'
+    ORDER BY date_imported DESC
+    LIMIT 5
 """))
 
 # COMMAND ----------
