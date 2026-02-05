@@ -355,20 +355,50 @@ def run_landing_page_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IM
             print(f"Aucune nouvelle landing page a importer pour {site_label}")
             continue
 
+        # --- DEBUG: Apercu des items bruts recus de l'API ---
+        print(f"\n[{site_label}] {len(items)} item(s) recus de l'API")
+        for i, item in enumerate(items[:3]):
+            wp_id = item.get('id')
+            title = item.get('title', {}).get('rendered', 'N/A')
+            status = item.get('status', 'N/A')
+            has_acf = bool(item.get('acf'))
+            content_empty = not item.get('content', {}).get('rendered', '')
+            print(f"   [{i+1}] wp_id={wp_id} | status={status} | title={title[:60]}")
+            print(f"        has_acf={has_acf} | content.rendered_vide={content_empty}")
+        if len(items) > 3:
+            print(f"   ... et {len(items) - 3} autre(s)")
+
         # Transforme les items
         transformed_items = [
             transform_landing_page_item(item, site_id, site_config)
             for item in items
         ]
 
+        # --- DEBUG: Apercu des items transformes ---
+        print(f"\n[{site_label}] {len(transformed_items)} item(s) transformes")
+        for i, t in enumerate(transformed_items[:3]):
+            print(f"   [{i+1}] id={t['id']} | wp_id={t['wp_id']} | site_id={t['site_id']}")
+            print(f"        title={t['title'][:60] if t['title'] else 'VIDE'}")
+            print(f"        meta_keyword={t['meta_keyword'] or 'None'}")
+            content_len = len(t['content_raw']) if t['content_raw'] else 0
+            text_len = len(t['content_text']) if t['content_text'] else 0
+            print(f"        content_raw={content_len} chars | content_text={text_len} chars")
+            print(f"        noindex={t['noindex']} | language={t['language']}")
+            taxonomies = t.get('custom_taxonomies')
+            print(f"        custom_taxonomies={taxonomies}")
+
         # Cree le DataFrame
         df = spark.createDataFrame(transformed_items, LANDING_PAGE_SCHEMA)
+
+        # --- DEBUG: Affiche le DataFrame avant upsert ---
+        print(f"\n[{site_label}] DataFrame cree: {df.count()} rows, {len(df.columns)} colonnes")
+        display(df.select("id", "wp_id", "site_id", "content_type", "title", "meta_keyword", "noindex", "language", "status", "date_published"))
 
         # Upsert dans la table
         upsert_landing_pages(df, catalog, schema, table_name)
 
         total_imported += len(transformed_items)
-        print(f"[{site_label}] {len(transformed_items)} landing page(s) importee(s)")
+        print(f"\n[{site_label}] {len(transformed_items)} landing page(s) importee(s)")
 
     print(f"\n{'#'*60}")
     print(f"Import landing pages termine! Total: {total_imported} landing pages importees")
@@ -407,42 +437,76 @@ def run_landing_page_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IM
 
 # COMMAND ----------
 
-# Affiche un apercu des landing pages importees par site
+# Diagnostic: verifie que la table existe et contient des donnees
 full_table = f"{LANDING_PAGE_TABLE_CONFIG['catalog']}.{LANDING_PAGE_TABLE_CONFIG['schema']}.{LANDING_PAGE_TABLE_CONFIG['table_name']}"
 
-display(spark.sql(f"""
-    SELECT
-        site_id,
-        content_type,
-        language,
-        COUNT(*) as nb_items,
-        MIN(date_published) as oldest,
-        MAX(date_published) as newest,
-        MAX(date_imported) as last_import
+print(f"Table cible: {full_table}")
+print(f"Table existe: {spark.catalog.tableExists(full_table)}")
+
+# Compte total par content_type pour voir si la table contient des donnees
+df_counts = spark.sql(f"""
+    SELECT content_type, COUNT(*) as nb_items
     FROM {full_table}
-    WHERE content_type = 'landing_page'
-    GROUP BY site_id, content_type, language
-    ORDER BY site_id
-"""))
+    GROUP BY content_type
+    ORDER BY content_type
+""")
+print(f"\nRepartition par content_type dans {full_table}:")
+display(df_counts)
 
 # COMMAND ----------
 
-# Apercu des dernieres landing pages par site
-display(spark.sql(f"""
-    SELECT
-        site_id,
-        id,
-        wp_id,
-        title,
-        url,
-        language,
-        LEFT(content_text, 200) as content_preview,
-        date_published
-    FROM {full_table}
-    WHERE content_type = 'landing_page'
-    ORDER BY site_id, date_published DESC
-    LIMIT 20
-"""))
+# Comptage specifique landing pages
+lp_count = spark.sql(f"SELECT COUNT(*) as cnt FROM {full_table} WHERE content_type = 'landing_page'").collect()[0]['cnt']
+print(f"Nombre de landing pages dans la table: {lp_count}")
+
+if lp_count == 0:
+    print("AUCUNE landing page trouvee. Verifiez que le pipeline a bien ete execute (section 7).")
+    print("Verifiez aussi que l'API retourne bien des items (URL, auth, endpoint).")
+else:
+    # Apercu des landing pages importees par site
+    display(spark.sql(f"""
+        SELECT
+            site_id,
+            content_type,
+            language,
+            COUNT(*) as nb_items,
+            MIN(date_published) as oldest,
+            MAX(date_published) as newest,
+            MAX(date_imported) as last_import
+        FROM {full_table}
+        WHERE content_type = 'landing_page'
+        GROUP BY site_id, content_type, language
+        ORDER BY site_id
+    """))
+
+# COMMAND ----------
+
+# Apercu des dernieres landing pages (champs cles + contenu)
+lp_count = spark.sql(f"SELECT COUNT(*) as cnt FROM {full_table} WHERE content_type = 'landing_page'").collect()[0]['cnt']
+
+if lp_count == 0:
+    print("Aucune landing page a afficher.")
+else:
+    display(spark.sql(f"""
+        SELECT
+            site_id,
+            id,
+            wp_id,
+            title,
+            url,
+            meta_keyword,
+            language,
+            noindex,
+            LENGTH(content_raw) as content_raw_len,
+            LENGTH(content_text) as content_text_len,
+            LEFT(content_text, 200) as content_preview,
+            date_published,
+            date_imported
+        FROM {full_table}
+        WHERE content_type = 'landing_page'
+        ORDER BY date_imported DESC, site_id
+        LIMIT 20
+    """))
 
 # COMMAND ----------
 
