@@ -1,10 +1,10 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC
-# MAGIC # Import des Articles et Pages WordPress
+# MAGIC # Import des Articles WordPress
 # MAGIC
 # MAGIC Ce notebook permet de :
-# MAGIC - Recuperer les articles (posts) et pages via l'API WordPress REST
+# MAGIC - Recuperer les articles (posts) via l'API WordPress REST
 # MAGIC - Stocker les contenus dans la table `cegid_website` avec gestion des offsets
 # MAGIC - Supporter l'incremental via le tracking des IDs deja importes
 
@@ -20,28 +20,20 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 2. Configuration specifique aux contenus
+# MAGIC ## 2. Configuration specifique aux articles
 
 # COMMAND ----------
 
-# Configuration Databricks pour les contenus (posts/pages)
+# Configuration Databricks pour les contenus (posts)
 CONTENT_TABLE_CONFIG = {
     "catalog": DATABRICKS_CATALOG,
     "schema": DATABRICKS_SCHEMA,
     "table_name": "cegid_website"
 }
 
-# Types de contenu a importer
-CONTENT_TYPES = {
-    "post": {
-        "endpoint": "/posts",
-        "label": "blog"
-    },
-    "page": {
-        "endpoint": "/pages",
-        "label": "pages"
-    }
-}
+# Configuration du type de contenu
+CONTENT_TYPE = "post"
+CONTENT_ENDPOINT = "/posts"
 
 # COMMAND ----------
 
@@ -287,18 +279,14 @@ def upsert_content(df: DataFrame, catalog: str, schema: str, table_name: str):
 
 # COMMAND ----------
 
-def run_import_pipeline(content_types: Dict = CONTENT_TYPES,
-                        sites_to_import: List[str] = WP_SITES_TO_IMPORT,
-                        incremental: bool = True,
-                        specific_type: Optional[str] = None):
+def run_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPORT,
+                        incremental: bool = True):
     """
-    Execute le pipeline d'import complet pour un ou plusieurs sites.
+    Execute le pipeline d'import des articles (posts) pour un ou plusieurs sites.
 
     Args:
-        content_types: Dictionnaire des types de contenu a importer
         sites_to_import: Liste des site_id a importer (ex: ["fr", "es"])
         incremental: Si True, importe seulement les nouveaux contenus
-        specific_type: Si specifie, importe seulement ce type de contenu
     """
     catalog = CONTENT_TABLE_CONFIG["catalog"]
     schema = CONTENT_TABLE_CONFIG["schema"]
@@ -312,9 +300,6 @@ def run_import_pipeline(content_types: Dict = CONTENT_TYPES,
         spark_schema=CONTENT_SCHEMA,
         partition_by=["site_id", "content_type"]
     )
-
-    # Filtre les types si specifie
-    types_to_import = {specific_type: content_types[specific_type]} if specific_type else content_types
 
     total_imported = 0
 
@@ -335,46 +320,45 @@ def run_import_pipeline(content_types: Dict = CONTENT_TYPES,
         # Initialise le connecteur pour ce site
         connector = WordPressConnector(site_id, site_config)
 
-        for content_type, config in types_to_import.items():
-            print(f"\n{'='*50}")
-            print(f"[{site_label}] Import: {config['label']} ({content_type})")
-            print(f"{'='*50}")
+        print(f"\n{'='*50}")
+        print(f"[{site_label}] Import: articles ({CONTENT_TYPE})")
+        print(f"{'='*50}")
 
-            # Recupere la derniere date de modification pour import incremental
-            modified_after = None
-            if incremental:
-                modified_after = get_last_modified_date(catalog, schema, table_name, site_id, content_type)
-                if modified_after:
-                    print(f"Mode incremental - contenus modifies apres: {modified_after}")
+        # Recupere la derniere date de modification pour import incremental
+        modified_after = None
+        if incremental:
+            modified_after = get_last_modified_date(catalog, schema, table_name, site_id, CONTENT_TYPE)
+            if modified_after:
+                print(f"Mode incremental - contenus modifies apres: {modified_after}")
 
-            # Recupere les contenus WordPress
-            items = connector.fetch_all_content(
-                content_type=content_type,
-                endpoint=config["endpoint"],
-                modified_after=modified_after
-            )
+        # Recupere les articles WordPress
+        items = connector.fetch_all_content(
+            content_type=CONTENT_TYPE,
+            endpoint=CONTENT_ENDPOINT,
+            modified_after=modified_after
+        )
 
-            if not items:
-                print(f"Aucun nouveau contenu a importer pour {content_type}")
-                continue
+        if not items:
+            print(f"Aucun nouvel article a importer")
+            continue
 
-            # Transforme les items
-            transformed_items = [
-                transform_content_item(item, content_type, site_id, site_config)
-                for item in items
-            ]
+        # Transforme les items
+        transformed_items = [
+            transform_content_item(item, CONTENT_TYPE, site_id, site_config)
+            for item in items
+        ]
 
-            # Cree le DataFrame
-            df = spark.createDataFrame(transformed_items, CONTENT_SCHEMA)
+        # Cree le DataFrame
+        df = spark.createDataFrame(transformed_items, CONTENT_SCHEMA)
 
-            # Upsert dans la table
-            upsert_content(df, catalog, schema, table_name)
+        # Upsert dans la table
+        upsert_content(df, catalog, schema, table_name)
 
-            total_imported += len(transformed_items)
-            print(f"[{site_label}] {len(transformed_items)} {content_type}(s) importe(s)")
+        total_imported += len(transformed_items)
+        print(f"[{site_label}] {len(transformed_items)} article(s) importe(s)")
 
     print(f"\n{'#'*60}")
-    print(f"Import termine! Total: {total_imported} contenus importes")
+    print(f"Import termine! Total: {total_imported} articles importes")
     print(f"   Sites traites: {', '.join(sites_to_import)}")
     print(f"{'#'*60}")
 
@@ -391,7 +375,7 @@ def run_import_pipeline(content_types: Dict = CONTENT_TYPES,
 # EXEMPLES D'EXECUTION
 # =============================================================================
 
-# Import d'un seul site (FR), tous les types de contenu
+# Import d'un seul site (FR), tous les articles
 # run_import_pipeline(sites_to_import=["fr"], incremental=False)
 
 # Import incremental d'un seul site
@@ -402,9 +386,6 @@ run_import_pipeline(sites_to_import=["fr"], incremental=True)
 
 # Import de TOUS les sites configures
 # run_import_pipeline(sites_to_import=list(WP_SITES.keys()), incremental=False)
-
-# Import d'un type specifique sur un site
-# run_import_pipeline(sites_to_import=["fr"], specific_type="post", incremental=False)
 
 # COMMAND ----------
 
