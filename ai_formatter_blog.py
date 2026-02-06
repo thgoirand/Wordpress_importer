@@ -1,10 +1,13 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC
-# MAGIC # Formatage AI des contenus WordPress
+# MAGIC # Formatage AI des contenus Blog WordPress
 # MAGIC
-# MAGIC Ce notebook formate les contenus bruts (raw_json) en markdown structure
+# MAGIC Ce notebook formate les contenus blog bruts (raw_json) en markdown structure
 # MAGIC via `AI_QUERY` (Databricks AI Functions).
+# MAGIC
+# MAGIC **Scope:** Articles de blog (`post`), landing pages, produits.
+# MAGIC Les study cases sont traites par `ai_formatter_use_case`.
 # MAGIC
 # MAGIC **Pourquoi un notebook separe ?**
 # MAGIC Les appels AI_QUERY sur de gros volumes provoquent des timeouts du serverless compute.
@@ -74,6 +77,7 @@ def get_items_to_process(source_table: str) -> list:
     FROM {source_table}
     WHERE
         raw_json IS NOT NULL AND raw_json != ''
+        AND content_type != 'study_case'
         AND (
             content_text IS NULL
             OR content_text = ''

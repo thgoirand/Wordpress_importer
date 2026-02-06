@@ -87,6 +87,9 @@ LANDING_PAGE_SCHEMA = StructType([
     # --- LANGUE ---
     StructField("language", StringType(), True),
 
+    # --- KEY FIGURES (use cases) ---
+    StructField("key_figures", ArrayType(StringType()), True),
+
     # --- DONNEES BRUTES ---
     StructField("raw_json", StringType(), True),
 ])
@@ -227,6 +230,9 @@ def transform_landing_page_item(item: Dict, site_id: str, site_config: Dict) -> 
 
         # --- LANGUE ---
         "language": language,
+
+        # --- KEY FIGURES ---
+        "key_figures": None,
 
         # --- DONNEES BRUTES ---
         "raw_json": json.dumps(item, ensure_ascii=False),
