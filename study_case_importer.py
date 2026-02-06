@@ -357,18 +357,18 @@ def run_study_case_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPO
         print(f"[{site_label}] Import: Study Cases (study_case)")
         print(f"{'='*50}")
 
-        # Recupere le dernier ID pour import incremental
-        since_id = None
+        # Recupere la derniere date de modification pour import incremental
+        modified_after = None
         if incremental:
-            since_id = get_last_imported_id(catalog, schema, table_name, site_id, STUDY_CASE_CONTENT_TYPE)
-            if since_id:
-                print(f"Mode incremental - depuis ID: {since_id}")
+            modified_after = get_last_modified_date(catalog, schema, table_name, site_id, STUDY_CASE_CONTENT_TYPE)
+            if modified_after:
+                print(f"Mode incremental - contenus modifies apres: {modified_after}")
 
         # Recupere les study cases WordPress via /wp-json/wp/v2/study-case
         items = connector.fetch_all_content(
             content_type=STUDY_CASE_CONTENT_TYPE,
             endpoint=STUDY_CASE_ENDPOINT,
-            since_id=since_id
+            modified_after=modified_after
         )
 
         if not items:

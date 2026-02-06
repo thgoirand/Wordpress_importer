@@ -337,18 +337,18 @@ def run_landing_page_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IM
         print(f"[{site_label}] Import: Landing Pages (landing_page)")
         print(f"{'='*50}")
 
-        # Recupere le dernier ID pour import incremental
-        since_id = None
+        # Recupere la derniere date de modification pour import incremental
+        modified_after = None
         if incremental:
-            since_id = get_last_imported_id(catalog, schema, table_name, site_id, "landing_page")
-            if since_id:
-                print(f"Mode incremental - depuis ID: {since_id}")
+            modified_after = get_last_modified_date(catalog, schema, table_name, site_id, "landing_page")
+            if modified_after:
+                print(f"Mode incremental - contenus modifies apres: {modified_after}")
 
         # Recupere les landing pages via /wp-json/wp/v2/landing-page
         items = connector.fetch_all_content(
             content_type="landing_page",
             endpoint=LANDING_PAGE_ENDPOINT,
-            since_id=since_id
+            modified_after=modified_after
         )
 
         if not items:

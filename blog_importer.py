@@ -340,18 +340,18 @@ def run_import_pipeline(content_types: Dict = CONTENT_TYPES,
             print(f"[{site_label}] Import: {config['label']} ({content_type})")
             print(f"{'='*50}")
 
-            # Recupere le dernier ID pour import incremental
-            since_id = None
+            # Recupere la derniere date de modification pour import incremental
+            modified_after = None
             if incremental:
-                since_id = get_last_imported_id(catalog, schema, table_name, site_id, content_type)
-                if since_id:
-                    print(f"Mode incremental - depuis ID: {since_id}")
+                modified_after = get_last_modified_date(catalog, schema, table_name, site_id, content_type)
+                if modified_after:
+                    print(f"Mode incremental - contenus modifies apres: {modified_after}")
 
             # Recupere les contenus WordPress
             items = connector.fetch_all_content(
                 content_type=content_type,
                 endpoint=config["endpoint"],
-                since_id=since_id
+                modified_after=modified_after
             )
 
             if not items:

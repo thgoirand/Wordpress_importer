@@ -7,7 +7,7 @@
 # MAGIC - Recuperer les pages produit via l'API WordPress REST `/wp-json/wp/v2/product`
 # MAGIC - Extraire les champs ACF flexibles (header, arguments, features, resources)
 # MAGIC - Stocker les produits dans la table `cegid_website` (content_type = "product")
-# MAGIC - Supporter l'import incremental via le tracking des IDs
+# MAGIC - Supporter l'import incremental via la date de derniere modification
 
 # COMMAND ----------
 
@@ -337,7 +337,7 @@ def run_product_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPORT,
 
     Args:
         sites_to_import: Liste des site_id a importer (ex: ["fr", "es"])
-        incremental: Si True, importe seulement les nouveaux produits
+        incremental: Si True, importe seulement les produits nouveaux ou modifies
     """
     catalog = PRODUCT_TABLE_CONFIG["catalog"]
     schema = PRODUCT_TABLE_CONFIG["schema"]
@@ -375,18 +375,18 @@ def run_product_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPORT,
         print(f"[{site_label}] Import: Produits (product)")
         print(f"{'='*50}")
 
-        # Recupere le dernier ID pour import incremental
-        since_id = None
+        # Recupere la derniere date de modification pour import incremental
+        modified_after = None
         if incremental:
-            since_id = get_last_imported_id(catalog, schema, table_name, site_id, "product")
-            if since_id:
-                print(f"Mode incremental - depuis ID: {since_id}")
+            modified_after = get_last_modified_date(catalog, schema, table_name, site_id, "product")
+            if modified_after:
+                print(f"Mode incremental - contenus modifies apres: {modified_after}")
 
         # Recupere les produits WordPress via /wp-json/wp/v2/product
         items = connector.fetch_all_content(
             content_type="product",
             endpoint=PRODUCT_ENDPOINT,
-            since_id=since_id
+            modified_after=modified_after
         )
 
         if not items:
