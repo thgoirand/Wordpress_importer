@@ -1,19 +1,19 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC
-# MAGIC # Formatage AI des contenus Blog WordPress
+# MAGIC # Formatage AI des Landing Pages WordPress
 # MAGIC
-# MAGIC Ce notebook formate les contenus blog bruts (raw_json) en markdown structure
+# MAGIC Ce notebook formate les contenus landing pages bruts (raw_json) en markdown structure
 # MAGIC via `AI_QUERY` (Databricks AI Functions).
 # MAGIC
-# MAGIC **Scope:** Articles de blog (`post`) uniquement.
+# MAGIC **Scope:** Landing pages (`landing_page`) uniquement.
 # MAGIC Chaque content type dispose de son propre formatter.
 # MAGIC
 # MAGIC **Pourquoi un notebook separe ?**
 # MAGIC Les appels AI_QUERY sur de gros volumes provoquent des timeouts du serverless compute.
 # MAGIC Ce notebook traite les elements par batch (defaut: 5) pour eviter ce probleme.
 # MAGIC
-# MAGIC **Pre-requis:** Executer `blog_importer` avant pour alimenter la table `cegid_website_pages`.
+# MAGIC **Pre-requis:** Executer `landing_page_importer` avant pour alimenter la table `cegid_website_pages`.
 
 # COMMAND ----------
 
@@ -40,11 +40,13 @@ AI_MODEL = "databricks-claude-haiku-4-5"
 # Taille des batchs (nombre d'elements traites par requete AI_QUERY)
 BATCH_SIZE = 5
 
-# Prompt systeme pour le formatage
+# Prompt systeme pour le formatage des landing pages
 AI_PROMPT = (
     "Tu es un expert en formatage de contenu web. "
-    "Convertis ce JSON WordPress en markdown propre et structure. "
+    "Convertis ce JSON WordPress d'une landing page en markdown propre et structure. "
+    "Le contenu provient de blocs ACF flexibles (header, grilles, arguments). "
     "Utilise des titres (##, ###), des listes, et formate correctement les liens. "
+    "Structure le contenu de maniere claire avec les sections d'argumentation bien identifiees. "
     "Retourne uniquement le markdown, sans explications. "
     "JSON: "
 )
@@ -58,9 +60,9 @@ AI_PROMPT = (
 
 def get_items_to_process(source_table: str) -> list:
     """
-    Identifie les articles de blog qui necessitent un formatage AI.
+    Identifie les landing pages qui necessitent un formatage AI.
     Criteres:
-    - content_type = 'post'
+    - content_type = 'landing_page'
     - raw_json non vide
     - content_text vide (nouveau) OU modifie recemment sans re-formatage
     Retourne la liste des IDs a traiter.
@@ -78,7 +80,7 @@ def get_items_to_process(source_table: str) -> list:
     FROM {source_table}
     WHERE
         raw_json IS NOT NULL AND raw_json != ''
-        AND content_type = 'post'
+        AND content_type = 'landing_page'
         AND (
             content_text IS NULL
             OR content_text = ''
@@ -93,7 +95,7 @@ def get_items_to_process(source_table: str) -> list:
 df_to_process = get_items_to_process(SOURCE_TABLE)
 total_count = df_to_process.count()
 
-print(f"{total_count} article(s) de blog a traiter")
+print(f"{total_count} landing page(s) a traiter")
 display(df_to_process)
 
 # COMMAND ----------
@@ -146,7 +148,7 @@ def run_ai_formatting(source_table: str = SOURCE_TABLE,
                       ai_model: str = AI_MODEL,
                       ai_prompt: str = AI_PROMPT):
     """
-    Execute le formatage AI sur tous les elements en attente, par batch.
+    Execute le formatage AI sur toutes les landing pages en attente, par batch.
 
     Args:
         source_table: Nom complet de la table Delta
@@ -163,14 +165,14 @@ def run_ai_formatting(source_table: str = SOURCE_TABLE,
     total = len(all_ids)
 
     if total == 0:
-        print("Aucun element a traiter.")
+        print("Aucune landing page a traiter.")
         return 0
 
     # Decoupe en batchs
     batches = [all_ids[i:i + batch_size] for i in range(0, total, batch_size)]
     nb_batches = len(batches)
 
-    print(f"Traitement de {total} element(s) en {nb_batches} batch(s) de {batch_size} max")
+    print(f"Traitement de {total} landing page(s) en {nb_batches} batch(s) de {batch_size} max")
     print(f"Modele: {ai_model}")
     print(f"{'='*60}")
 
@@ -191,7 +193,7 @@ def run_ai_formatting(source_table: str = SOURCE_TABLE,
             continue
 
     print(f"\n{'='*60}")
-    print(f"Formatage termine: {processed}/{total} element(s) traite(s)")
+    print(f"Formatage termine: {processed}/{total} landing page(s) traite(s)")
 
     return processed
 
@@ -203,7 +205,7 @@ def run_ai_formatting(source_table: str = SOURCE_TABLE,
 # COMMAND ----------
 
 # =============================================================================
-# Lancer le formatage AI par batch
+# Lancer le formatage AI par batch pour les landing pages
 # =============================================================================
 
 total_processed = run_ai_formatting()
@@ -215,7 +217,7 @@ total_processed = run_ai_formatting()
 
 # COMMAND ----------
 
-# Apercu des derniers articles formates
+# Apercu des dernieres landing pages formatees
 display(spark.sql(f"""
     SELECT
         id,
@@ -225,14 +227,14 @@ display(spark.sql(f"""
         date_modified
     FROM {SOURCE_TABLE}
     WHERE date_formatted IS NOT NULL
-        AND content_type = 'post'
+        AND content_type = 'landing_page'
     ORDER BY date_formatted DESC
     LIMIT 20
 """))
 
 # COMMAND ----------
 
-# Statistiques de formatage des articles
+# Statistiques de formatage des landing pages
 display(spark.sql(f"""
     SELECT
         site_id,
@@ -240,7 +242,7 @@ display(spark.sql(f"""
         COUNT(date_formatted) AS formatted,
         COUNT(*) - COUNT(date_formatted) AS remaining
     FROM {SOURCE_TABLE}
-    WHERE content_type = 'post'
+    WHERE content_type = 'landing_page'
     GROUP BY site_id
     ORDER BY site_id
 """))
