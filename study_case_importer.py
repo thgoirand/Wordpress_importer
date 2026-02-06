@@ -412,7 +412,7 @@ def run_study_case_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPO
 # run_study_case_import_pipeline(sites_to_import=["fr"], incremental=False)
 
 # Import incremental des study cases d'un seul site
-# run_study_case_import_pipeline(sites_to_import=["fr"], incremental=True)
+run_study_case_import_pipeline(sites_to_import=["fr"], incremental=True)
 
 # Import des study cases de plusieurs sites
 # run_study_case_import_pipeline(sites_to_import=["fr", "es", "uk"], incremental=False)

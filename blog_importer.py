@@ -395,7 +395,7 @@ def run_import_pipeline(content_types: Dict = CONTENT_TYPES,
 # run_import_pipeline(sites_to_import=["fr"], incremental=False)
 
 # Import incremental d'un seul site
-# run_import_pipeline(sites_to_import=["fr"], incremental=True)
+run_import_pipeline(sites_to_import=["fr"], incremental=True)
 
 # Import de plusieurs sites
 # run_import_pipeline(sites_to_import=["fr", "es", "uk"], incremental=False)
