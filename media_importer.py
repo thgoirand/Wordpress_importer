@@ -464,7 +464,17 @@ def upsert_media_data(df: DataFrame, catalog: str, schema: str, table_name: str)
             date_modified = source.date_modified,
             date_imported = source.date_imported,
             raw_json = source.raw_json
-        WHEN NOT MATCHED THEN INSERT *
+        WHEN NOT MATCHED THEN
+            INSERT (id, wp_id, site_id, slug, title, alt_text,
+                    source_url, media_type, mime_type, file_extension,
+                    filesize, width, height, class_list,
+                    status, client_associated, taxonomy_company_id,
+                    language, date_created, date_modified, date_imported, raw_json)
+            VALUES (source.id, source.wp_id, source.site_id, source.slug, source.title, source.alt_text,
+                    source.source_url, source.media_type, source.mime_type, source.file_extension,
+                    source.filesize, source.width, source.height, source.class_list,
+                    source.status, source.client_associated, source.taxonomy_company_id,
+                    source.language, source.date_created, source.date_modified, source.date_imported, source.raw_json)
     """)
 
     print(f"✅ Upsert terminé dans {full_table_name}")
