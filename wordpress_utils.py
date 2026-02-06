@@ -333,18 +333,25 @@ class WordPressConnector:
             return [], 0
 
     def fetch_all_content(self, content_type: str, endpoint: str,
-                          since_id: Optional[int] = None) -> List[Dict]:
+                          since_id: Optional[int] = None,
+                          modified_after: Optional[str] = None) -> List[Dict]:
         """
         Recupere tous les contenus d'un type donne pour ce site.
-        Support optionnel de l'import incremental via since_id.
+        Support optionnel de l'import incremental via modified_after (date ISO 8601)
+        ou since_id (ancien mode par ID, deprecie).
         """
         all_items = []
         page = 1
         total_pages = 1
 
         params = {}
-        if since_id:
-            # Recupere seulement les IDs superieurs (nouveaux contenus)
+        if modified_after:
+            # Recupere les contenus modifies apres cette date
+            params["modified_after"] = modified_after
+            params["orderby"] = "modified"
+            params["order"] = "asc"
+        elif since_id:
+            # Ancien mode: recupere seulement les IDs superieurs (nouveaux contenus)
             params["after"] = since_id
 
         site_label = self.site_config.get("label", self.site_id)
@@ -433,6 +440,33 @@ def get_last_imported_id(catalog: str, schema: str, table_name: str,
 
     return None
 
+
+def get_last_modified_date(catalog: str, schema: str, table_name: str,
+                           site_id: str, content_type: str = None) -> Optional[str]:
+    """
+    Recupere la date de derniere modification pour un site et type de contenu.
+    Retourne la date au format ISO 8601 (ex: 2024-01-15T10:30:00) pour l'API WordPress.
+    """
+    full_table_name = f"{catalog}.{schema}.{table_name}"
+
+    try:
+        where_clause = f"WHERE site_id = '{site_id}'"
+        if content_type:
+            where_clause += f" AND content_type = '{content_type}'"
+
+        result = spark.sql(f"""
+            SELECT MAX(date_modified) as last_modified
+            FROM {full_table_name}
+            {where_clause}
+        """).collect()
+
+        if result and result[0]['last_modified']:
+            return result[0]['last_modified'].strftime('%Y-%m-%dT%H:%M:%S')
+    except Exception as e:
+        print(f"Note: {e}")
+
+    return None
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -443,4 +477,4 @@ def get_last_imported_id(catalog: str, schema: str, table_name: str,
 # MAGIC - `DATABRICKS_CATALOG`, `DATABRICKS_SCHEMA`
 # MAGIC - `clean_html_content()`, `get_nested_value()`, `parse_wp_date()`, `calculate_composite_id()`
 # MAGIC - `WordPressConnector`
-# MAGIC - `create_delta_table()`, `get_last_imported_id()`
+# MAGIC - `create_delta_table()`, `get_last_imported_id()`, `get_last_modified_date()`
