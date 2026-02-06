@@ -132,7 +132,7 @@ def _build_landing_page_content_raw(item: Dict) -> str:
 
         # builder-grid : parcourt les sous-blocs de la grille
         if layout == 'builder-grid':
-            for grid_item in block.get('flexible_grid', []):
+            for grid_item in (block.get('flexible_grid') or []):
                 if grid_item.get('acf_fc_layout') == 'grid-content':
                     content = grid_item.get('content', '')
                     if content:
@@ -144,7 +144,7 @@ def _build_landing_page_content_raw(item: Dict) -> str:
             intro = block.get('intro', '')
             if intro:
                 parts.append(intro)
-            for arg in block.get('arguments', []):
+            for arg in (block.get('arguments') or []):
                 content = arg.get('content', '')
                 if content:
                     parts.append(content)
