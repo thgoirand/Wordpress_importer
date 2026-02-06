@@ -51,7 +51,10 @@ AI Formatting (Claude Haiku via Databricks AI Functions)
 ├── product_importer.py                # Import des produits
 ├── study_case_importer.py             # Import des études de cas
 ├── media_importer.py                  # Import des médias
-└── ai_formatter.py                    # Formatage IA du contenu
+├── ai_formatter_blog.py               # Formatage IA des articles de blog
+├── ai_formatter_landing_page.py       # Formatage IA des landing pages
+├── ai_formatter_product.py            # Formatage IA des produits
+└── ai_formatter_use_case.py           # Formatage IA des use cases + key figures
 ```
 
 ## Description des notebooks
@@ -183,20 +186,67 @@ run_import_pipeline(sites_to_import=["fr"], incremental=False, truncate_first=Tr
 
 ---
 
-### ai_formatter.py — Formatage IA du contenu
+### ai_formatter_blog.py — Formatage IA des articles de blog
 
 **Modèle** : Claude Haiku via Databricks AI Functions (`AI_QUERY`)
+**Scope** : Articles de blog (`post`)
 
-Post-traitement qui convertit le JSON brut WordPress en markdown structuré. Le processus :
+Convertit le JSON brut des articles en markdown structuré :
 
-1. Identifie les contenus non formatés ou récemment modifiés (colonne `date_formatted`).
+1. Identifie les articles non formatés ou récemment modifiés (colonne `date_formatted`).
 2. Découpe en lots (par défaut 5 éléments).
 3. Appelle Claude Haiku pour chaque lot via `AI_QUERY`.
 4. Met à jour `content_text` et `date_formatted` via MERGE.
 
 ```python
-# Formatter le contenu non traité
-format_content_with_ai(batch_size=5)
+total_processed = run_ai_formatting()
+```
+
+---
+
+### ai_formatter_landing_page.py — Formatage IA des landing pages
+
+**Modèle** : Claude Haiku via Databricks AI Functions (`AI_QUERY`)
+**Scope** : Landing pages (`landing_page`)
+
+Convertit le JSON brut des landing pages (blocs ACF : header, grilles, arguments) en markdown structuré. Même processus par batch que le formatter blog.
+
+```python
+total_processed = run_ai_formatting()
+```
+
+---
+
+### ai_formatter_product.py — Formatage IA des produits
+
+**Modèle** : Claude Haiku via Databricks AI Functions (`AI_QUERY`)
+**Scope** : Produits (`product`)
+
+Convertit le JSON brut des pages produit (blocs ACF : header, arguments produit, features) en markdown structuré. Même processus par batch que le formatter blog.
+
+```python
+total_processed = run_ai_formatting()
+```
+
+---
+
+### ai_formatter_use_case.py — Formatage IA des études de cas + key figures
+
+**Modèle** : Claude Haiku via Databricks AI Functions (`AI_QUERY`)
+**Scope** : Études de cas (`study_case`)
+
+Post-traitement spécifique aux use cases qui :
+
+1. Identifie les study cases non formatés ou récemment modifiés.
+2. Ajoute automatiquement la colonne `key_figures` (ARRAY<STRING>) si absente.
+3. Découpe en lots (par défaut 5 éléments).
+4. Appelle Claude Haiku deux fois par lot via `AI_QUERY` :
+   - Génération du contenu markdown (`content_text`)
+   - Extraction des chiffres clés (`key_figures`) : pourcentages, gains, ROI, etc.
+5. Met à jour `content_text`, `key_figures` et `date_formatted` via MERGE.
+
+```python
+total_processed = run_ai_formatting()
 ```
 
 ## Modes d'import
@@ -221,4 +271,7 @@ Récupère tous les contenus sans filtre de date. Peut optionnellement tronquer 
 Les notebooks sont conçus pour être exécutés en tant que **Databricks Workflows** :
 - **Import incrémental** : quotidien
 - **Auteurs & taxonomies** : hebdomadaire (TRUNCATE + INSERT)
-- **Formatage IA** : après chaque import de contenu
+- **Formatage IA blog** : après chaque import d'articles
+- **Formatage IA landing pages** : après chaque import de landing pages
+- **Formatage IA produits** : après chaque import de produits
+- **Formatage IA use cases** : après chaque import de study cases (contenu + key figures)

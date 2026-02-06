@@ -137,6 +137,9 @@ STUDY_CASE_SCHEMA = StructType([
     # --- LANGUE ---
     StructField("language", StringType(), True),
 
+    # --- KEY FIGURES (use cases) ---
+    StructField("key_figures", ArrayType(StringType()), True),
+
     # --- DONNEES BRUTES ---
     StructField("raw_json", StringType(), True),
 ])
@@ -248,6 +251,9 @@ def transform_study_case_item(item: Dict, site_id: str, site_config: Dict) -> Di
 
         # --- LANGUE ---
         "language": language,
+
+        # --- KEY FIGURES (renseigne par ai_formatter_use_case) ---
+        "key_figures": None,
 
         # --- DONNEES BRUTES ---
         "raw_json": json.dumps(item, ensure_ascii=False),
