@@ -10,7 +10,7 @@
 # MAGIC Les appels AI_QUERY sur de gros volumes provoquent des timeouts du serverless compute.
 # MAGIC Ce notebook traite les elements par batch (defaut: 5) pour eviter ce probleme.
 # MAGIC
-# MAGIC **Pre-requis:** Executer `blog_importer` avant pour alimenter la table `cegid_website`.
+# MAGIC **Pre-requis:** Executer `blog_importer` avant pour alimenter la table `cegid_website_pages`.
 
 # COMMAND ----------
 
@@ -29,7 +29,7 @@
 # COMMAND ----------
 
 # Table source / cible
-SOURCE_TABLE = f"{DATABRICKS_CATALOG}.{DATABRICKS_SCHEMA}.cegid_website"
+SOURCE_TABLE = f"{DATABRICKS_CATALOG}.{DATABRICKS_SCHEMA}.cegid_website_pages"
 
 # Modele AI a utiliser
 AI_MODEL = "databricks-claude-haiku-4-5"
