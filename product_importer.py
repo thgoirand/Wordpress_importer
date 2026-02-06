@@ -6,7 +6,7 @@
 # MAGIC Ce notebook permet de :
 # MAGIC - Recuperer les pages produit via l'API WordPress REST `/wp-json/wp/v2/product`
 # MAGIC - Extraire les champs ACF flexibles (header, arguments, features, resources)
-# MAGIC - Stocker les produits dans la table `cegid_website` (content_type = "product")
+# MAGIC - Stocker les produits dans la table `cegid_website_pages` (content_type = "product")
 # MAGIC - Supporter l'import incremental via la date de derniere modification
 
 # COMMAND ----------
@@ -29,7 +29,7 @@
 PRODUCT_TABLE_CONFIG = {
     "catalog": DATABRICKS_CATALOG,
     "schema": DATABRICKS_SCHEMA,
-    "table_name": "cegid_website"
+    "table_name": "cegid_website_pages"
 }
 
 # Endpoint API pour les produits
@@ -38,7 +38,7 @@ PRODUCT_ENDPOINT = "/product"
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Schema cegid_website (identique a blog_importer)
+# MAGIC ## 3. Schema cegid_website_pages (identique a blog_importer)
 
 # COMMAND ----------
 
@@ -93,7 +93,7 @@ CONTENT_SCHEMA = StructType([
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4. Mapping des champs produit vers cegid_website
+# MAGIC ## 4. Mapping des champs produit vers cegid_website_pages
 
 # COMMAND ----------
 
@@ -182,9 +182,9 @@ def _build_product_content_raw(header_content, acf_main):
 
 def transform_product_item(item: Dict, site_id: str, site_config: Dict) -> Dict:
     """
-    Transforme un item produit WordPress avec ACF en format standardise pour cegid_website.
+    Transforme un item produit WordPress avec ACF en format standardise pour cegid_website_pages.
 
-    Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website
+    Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website_pages
     Les champs ACF specifiques sont assembles dans content_raw/content_text
     et les donnees brutes completes sont conservees dans raw_json.
     """
@@ -279,7 +279,7 @@ def transform_product_item(item: Dict, site_id: str, site_config: Dict) -> Dict:
 
 def upsert_products(df: DataFrame, catalog: str, schema: str, table_name: str):
     """
-    Upsert (MERGE) des produits dans la table cegid_website.
+    Upsert (MERGE) des produits dans la table cegid_website_pages.
     Met a jour les produits existants, insere les nouveaux.
     Memes champs que upsert_content dans blog_importer.
     """
@@ -327,7 +327,7 @@ def run_product_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPORT,
     Execute le pipeline d'import des produits pour un ou plusieurs sites.
 
     Route API: /wp-json/wp/v2/product
-    Table cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website (content_type = "product")
+    Table cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website_pages (content_type = "product")
 
     Args:
         sites_to_import: Liste des site_id a importer (ex: ["fr", "es"])
@@ -337,7 +337,7 @@ def run_product_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPORT,
     schema = PRODUCT_TABLE_CONFIG["schema"]
     table_name = PRODUCT_TABLE_CONFIG["table_name"]
 
-    # Cree la table cegid_website si necessaire (meme schema que blog_importer)
+    # Cree la table cegid_website_pages si necessaire (meme schema que blog_importer)
     create_delta_table(
         catalog=catalog,
         schema=schema,
@@ -393,7 +393,7 @@ def run_product_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPORT,
             for item in items
         ]
 
-        # Cree le DataFrame avec le schema cegid_website
+        # Cree le DataFrame avec le schema cegid_website_pages
         df = spark.createDataFrame(transformed_items, CONTENT_SCHEMA)
 
         # Upsert dans la table produits
@@ -476,7 +476,7 @@ display(spark.sql(f"""
 
 # COMMAND ----------
 
-# Repartition des contenus par type dans cegid_website
+# Repartition des contenus par type dans cegid_website_pages
 display(spark.sql(f"""
     SELECT
         content_type,

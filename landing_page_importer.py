@@ -5,7 +5,7 @@
 # MAGIC
 # MAGIC Ce notebook permet de :
 # MAGIC - Recuperer les landing pages via l'API WordPress REST `/wp-json/wp/v2/landing-page`
-# MAGIC - Stocker les contenus dans la table `cegid_website` avec le content_type `landing_page`
+# MAGIC - Stocker les contenus dans la table `cegid_website_pages` avec le content_type `landing_page`
 # MAGIC - Supporter l'incremental via le tracking des IDs deja importes
 
 # COMMAND ----------
@@ -28,7 +28,7 @@
 LANDING_PAGE_TABLE_CONFIG = {
     "catalog": DATABRICKS_CATALOG,
     "schema": DATABRICKS_SCHEMA,
-    "table_name": "cegid_website"
+    "table_name": "cegid_website_pages"
 }
 
 # Endpoint API pour les landing pages
@@ -37,9 +37,9 @@ LANDING_PAGE_ENDPOINT = "/landing-page"
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Schema de la table cegid_website
+# MAGIC ## 3. Schema de la table cegid_website_pages
 # MAGIC
-# MAGIC Le schema est identique a celui des posts/pages (partage via `cegid_website`).
+# MAGIC Le schema est identique a celui des posts/pages (partage via `cegid_website_pages`).
 
 # COMMAND ----------
 
@@ -153,7 +153,7 @@ def transform_landing_page_item(item: Dict, site_id: str, site_config: Dict) -> 
     """
     Transforme une landing page WordPress en format standardise pour Databricks.
 
-    Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website
+    Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website_pages
     Content type: landing_page (offset 20_000_000)
     """
     wp_id = item.get('id')
@@ -241,7 +241,7 @@ def transform_landing_page_item(item: Dict, site_id: str, site_config: Dict) -> 
 
 def upsert_landing_pages(df: DataFrame, catalog: str, schema: str, table_name: str):
     """
-    Upsert (MERGE) des landing pages dans la table Delta cegid_website.
+    Upsert (MERGE) des landing pages dans la table Delta cegid_website_pages.
     Met a jour les contenus existants, insere les nouveaux.
     """
     full_table_name = f"{catalog}.{schema}.{table_name}"
@@ -288,7 +288,7 @@ def run_landing_page_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IM
     Execute le pipeline d'import des landing pages pour un ou plusieurs sites.
 
     Route API: /wp-json/wp/v2/landing-page
-    Table cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website
+    Table cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website_pages
     Content type: landing_page
 
     Args:
@@ -299,7 +299,7 @@ def run_landing_page_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IM
     schema = LANDING_PAGE_TABLE_CONFIG["schema"]
     table_name = LANDING_PAGE_TABLE_CONFIG["table_name"]
 
-    # Cree la table si necessaire (schema identique a cegid_website)
+    # Cree la table si necessaire (schema identique a cegid_website_pages)
     create_delta_table(
         catalog=catalog,
         schema=schema,

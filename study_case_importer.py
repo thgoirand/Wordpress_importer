@@ -5,7 +5,7 @@
 # MAGIC
 # MAGIC Ce notebook permet de :
 # MAGIC - Recuperer les study cases via l'API WordPress REST `/wp-json/wp/v2/study-case`
-# MAGIC - Stocker les contenus dans la table `cegid_website` avec gestion des offsets
+# MAGIC - Stocker les contenus dans la table `cegid_website_pages` avec gestion des offsets
 # MAGIC - Supporter l'incremental via le tracking des IDs deja importes
 
 # COMMAND ----------
@@ -28,7 +28,7 @@
 STUDY_CASE_TABLE_CONFIG = {
     "catalog": DATABRICKS_CATALOG,
     "schema": DATABRICKS_SCHEMA,
-    "table_name": "cegid_website"
+    "table_name": "cegid_website_pages"
 }
 
 # Type de contenu et endpoint API
@@ -38,7 +38,7 @@ STUDY_CASE_ENDPOINT = "/study-case"
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Schema de la table cegid_website
+# MAGIC ## 3. Schema de la table cegid_website_pages
 # MAGIC
 # MAGIC Le schema est identique a celui utilise par le blog_importer (posts/pages).
 # MAGIC Les study cases sont stockes dans la meme table avec `content_type = 'study_case'`.
@@ -172,7 +172,7 @@ def transform_study_case_item(item: Dict, site_id: str, site_config: Dict) -> Di
     """
     Transforme un item study case WordPress en format standardise pour Databricks.
 
-    Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website
+    Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website_pages
     Content type: study_case
 
     Note: Le contenu principal est dans acf.vah_flexible_main (blocs wysiwyg-section),
@@ -262,7 +262,7 @@ def transform_study_case_item(item: Dict, site_id: str, site_config: Dict) -> Di
 
 def upsert_study_cases(df: DataFrame, catalog: str, schema: str, table_name: str):
     """
-    Upsert (MERGE) des study cases dans la table Delta cegid_website.
+    Upsert (MERGE) des study cases dans la table Delta cegid_website_pages.
     Met a jour les contenus existants, insere les nouveaux.
     """
     full_table_name = f"{catalog}.{schema}.{table_name}"
@@ -309,7 +309,7 @@ def run_study_case_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPO
     Execute le pipeline d'import des study cases pour un ou plusieurs sites.
 
     Route API: /wp-json/wp/v2/study-case
-    Table cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website (content_type = 'study_case')
+    Table cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website_pages (content_type = 'study_case')
 
     Args:
         sites_to_import: Liste des site_id a importer (ex: ["fr", "es"])

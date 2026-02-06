@@ -5,7 +5,7 @@
 # MAGIC
 # MAGIC Ce notebook permet de :
 # MAGIC - Recuperer les articles (posts) via l'API WordPress REST
-# MAGIC - Stocker les contenus dans la table `cegid_website` avec gestion des offsets
+# MAGIC - Stocker les contenus dans la table `cegid_website_pages` avec gestion des offsets
 # MAGIC - Supporter l'incremental via le tracking des IDs deja importes
 
 # COMMAND ----------
@@ -28,7 +28,7 @@
 CONTENT_TABLE_CONFIG = {
     "catalog": DATABRICKS_CATALOG,
     "schema": DATABRICKS_SCHEMA,
-    "table_name": "cegid_website"
+    "table_name": "cegid_website_pages"
 }
 
 # Configuration du type de contenu
@@ -38,7 +38,7 @@ CONTENT_ENDPOINT = "/posts"
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Schema de la table cegid_website
+# MAGIC ## 3. Schema de la table cegid_website_pages
 
 # COMMAND ----------
 
@@ -149,7 +149,7 @@ def transform_content_item(item: Dict, content_type: str, site_id: str, site_con
     """
     Transforme un item WordPress en format standardise pour Databricks.
 
-    Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website
+    Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website_pages
     """
     wp_id = item.get('id')
 
