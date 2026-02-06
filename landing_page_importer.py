@@ -384,15 +384,14 @@ def run_landing_page_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IM
 
 # COMMAND ----------
 
+run_landing_page_import_pipeline(sites_to_import=["fr"], incremental=True)
+
 # =============================================================================
 # EXEMPLES D'EXECUTION
 # =============================================================================
 
-# Import des landing pages d'un seul site (FR)
-run_landing_page_import_pipeline(sites_to_import=["fr"], incremental=True)
-
-# Import incremental des landing pages d'un seul site
-# run_landing_page_import_pipeline(sites_to_import=["fr"], incremental=True)
+# Import des landing pages d'un seul site (FR) - full
+# run_landing_page_import_pipeline(sites_to_import=["fr"], incremental=False)
 
 # Import des landing pages de plusieurs sites
 # run_landing_page_import_pipeline(sites_to_import=["fr", "es", "uk"], incremental=False)

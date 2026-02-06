@@ -387,15 +387,14 @@ def run_import_pipeline(content_types: Dict = CONTENT_TYPES,
 
 # COMMAND ----------
 
+run_import_pipeline(sites_to_import=["fr"], incremental=True)
+
 # =============================================================================
 # EXEMPLES D'EXECUTION
 # =============================================================================
 
-# Import d'un seul site (FR), tous les types de contenu
+# Import d'un seul site (FR) - full
 # run_import_pipeline(sites_to_import=["fr"], incremental=False)
-
-# Import incremental d'un seul site
-# run_import_pipeline(sites_to_import=["fr"], incremental=True)
 
 # Import de plusieurs sites
 # run_import_pipeline(sites_to_import=["fr", "es", "uk"], incremental=False)

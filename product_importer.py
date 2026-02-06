@@ -422,15 +422,14 @@ def run_product_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPORT,
 
 # COMMAND ----------
 
+run_product_import_pipeline(sites_to_import=["fr"], incremental=True)
+
 # =============================================================================
 # EXEMPLES D'EXECUTION
 # =============================================================================
 
-# Import des produits d'un seul site (FR)
+# Import des produits d'un seul site (FR) - full
 # run_product_import_pipeline(sites_to_import=["fr"], incremental=False)
-
-# Import incremental des produits d'un seul site
-# run_product_import_pipeline(sites_to_import=["fr"], incremental=True)
 
 # Import des produits de plusieurs sites
 # run_product_import_pipeline(sites_to_import=["fr", "es", "uk"], incremental=False)
