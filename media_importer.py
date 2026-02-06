@@ -80,6 +80,8 @@ MEDIA_SCHEMA = StructType([
     # --- MÉTADONNÉES ---
     StructField("class_list", ArrayType(StringType()), True),  # Classes CSS associées
     StructField("status", StringType(), True),               # Statut (inherit, etc.)
+    StructField("client_associated", StringType(), True),    # Client associé (meta.client_associated)
+    StructField("taxonomy_company_id", IntegerType(), True), # ID taxonomy entreprise (meta.taxonomy_company_id)
 
     # --- LANGUE ---
     StructField("language", StringType(), True),             # Code langue (fr, es, en-GB, etc.)
@@ -115,6 +117,8 @@ MEDIA_SCHEMA = StructType([
 # MAGIC     height          INT,
 # MAGIC     class_list      ARRAY<STRING>,
 # MAGIC     status          STRING,
+# MAGIC     client_associated STRING,
+# MAGIC     taxonomy_company_id INT,
 # MAGIC     language        STRING,
 # MAGIC     date_created    TIMESTAMP,
 # MAGIC     date_modified   TIMESTAMP,
@@ -333,6 +337,8 @@ class WordPressMediaConnector:
             "height": height,
             "class_list": class_list,
             "status": item.get("status"),
+            "client_associated": get_nested_value(item, "meta.client_associated"),
+            "taxonomy_company_id": get_nested_value(item, "meta.taxonomy_company_id"),
             "language": item.get("lang") or self.site_config.get("language", "fr"),
             "date_created": parse_wp_date(item.get("date")),
             "date_modified": parse_wp_date(item.get("modified")),
@@ -412,6 +418,8 @@ def upsert_media_data(df: DataFrame, catalog: str, schema: str, table_name: str)
             height = source.height,
             class_list = source.class_list,
             status = source.status,
+            client_associated = source.client_associated,
+            taxonomy_company_id = source.taxonomy_company_id,
             language = source.language,
             date_created = source.date_created,
             date_modified = source.date_modified,
