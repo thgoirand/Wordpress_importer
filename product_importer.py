@@ -309,7 +309,18 @@ def upsert_products(df: DataFrame, catalog: str, schema: str, table_name: str):
                 featured_image_url = source.featured_image_url,
                 raw_json = source.raw_json
         WHEN NOT MATCHED THEN
-            INSERT *
+            INSERT (id, wp_id, content_type, site_id, slug, url, title,
+                    meta_description, meta_title, meta_keyword, noindex,
+                    content_raw, content_text, excerpt,
+                    categories, tags, custom_taxonomies,
+                    date_published, date_modified, date_imported,
+                    status, author_id, featured_image_url, language, raw_json)
+            VALUES (source.id, source.wp_id, source.content_type, source.site_id, source.slug, source.url, source.title,
+                    source.meta_description, source.meta_title, source.meta_keyword, source.noindex,
+                    source.content_raw, source.content_text, source.excerpt,
+                    source.categories, source.tags, source.custom_taxonomies,
+                    source.date_published, source.date_modified, source.date_imported,
+                    source.status, source.author_id, source.featured_image_url, source.language, source.raw_json)
     """)
 
     print(f"Upsert produits termine dans {full_table_name}")
