@@ -89,9 +89,6 @@ LANDING_PAGE_SCHEMA = StructType([
 
     # --- DONNEES BRUTES ---
     StructField("raw_json", StringType(), True),
-
-    # --- AI FORMATTING ---
-    StructField("date_formatted", TimestampType(), True),
 ])
 
 # COMMAND ----------
@@ -233,9 +230,6 @@ def transform_landing_page_item(item: Dict, site_id: str, site_config: Dict) -> 
 
         # --- DONNEES BRUTES ---
         "raw_json": json.dumps(item, ensure_ascii=False),
-
-        # --- AI FORMATTING ---
-        "date_formatted": None,
     }
 
 # COMMAND ----------
@@ -483,15 +477,3 @@ display(spark.sql(f"""
     LIMIT 5
 """))
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 9. AI functions (optionnel)
-# MAGIC
-# MAGIC Le formatage AI des contenus est realise dans un notebook dedie `ai_formatter`
-# MAGIC afin d'eviter les timeouts du serverless compute sur de gros volumes.
-# MAGIC
-# MAGIC Le notebook traite les elements par batch de 5 via AI_QUERY.
-# MAGIC Les landing pages dans `cegid_website` sont automatiquement prises en charge.
-# MAGIC
-# MAGIC **Usage:** Executer `ai_formatter` apres l'import des contenus.
