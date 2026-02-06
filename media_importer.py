@@ -80,8 +80,6 @@ MEDIA_SCHEMA = StructType([
     # --- MÉTADONNÉES ---
     StructField("class_list", ArrayType(StringType()), True),  # Classes CSS associées
     StructField("status", StringType(), True),               # Statut (inherit, etc.)
-    StructField("client_associated", StringType(), True),    # Client associé (meta.client_associated)
-    StructField("taxonomy_company_id", IntegerType(), True), # ID taxonomie company (meta.taxonomy_company_id)
 
     # --- LANGUE ---
     StructField("language", StringType(), True),             # Code langue (fr, es, en-GB, etc.)
@@ -117,8 +115,6 @@ MEDIA_SCHEMA = StructType([
 # MAGIC     height          INT,
 # MAGIC     class_list      ARRAY<STRING>,
 # MAGIC     status          STRING,
-# MAGIC     client_associated STRING,
-# MAGIC     taxonomy_company_id INT,
 # MAGIC     language        STRING,
 # MAGIC     date_created    TIMESTAMP,
 # MAGIC     date_modified   TIMESTAMP,
@@ -321,16 +317,6 @@ class WordPressMediaConnector:
         if class_list and not isinstance(class_list, list):
             class_list = None
 
-        # Métadonnées custom (meta.client_associated, meta.taxonomy_company_id)
-        meta = item.get("meta") or {}
-        client_associated = meta.get("client_associated")
-        taxonomy_company_id = meta.get("taxonomy_company_id")
-        if taxonomy_company_id is not None:
-            try:
-                taxonomy_company_id = int(taxonomy_company_id)
-            except (ValueError, TypeError):
-                taxonomy_company_id = None
-
         return {
             "id": calculate_media_id(wp_id, self.site_id),
             "wp_id": wp_id,
@@ -347,8 +333,6 @@ class WordPressMediaConnector:
             "height": height,
             "class_list": class_list,
             "status": item.get("status"),
-            "client_associated": client_associated,
-            "taxonomy_company_id": taxonomy_company_id,
             "language": item.get("lang") or self.site_config.get("language", "fr"),
             "date_created": parse_wp_date(item.get("date")),
             "date_modified": parse_wp_date(item.get("modified")),
@@ -391,27 +375,7 @@ def _migrate_media_table_schema(full_table_name: str):
     Vérifie que la table existante possède toutes les colonnes du schéma attendu.
     Ajoute les colonnes manquantes via ALTER TABLE si nécessaire.
     """
-    # Mapping des noms de colonnes du schéma vers leur type SQL
-    schema_column_types = {
-        "client_associated": "STRING",
-        "taxonomy_company_id": "INT",
-    }
-
-    existing_columns = {f.name for f in spark.table(full_table_name).schema.fields}
-
-    missing_columns = {
-        col: sql_type
-        for col, sql_type in schema_column_types.items()
-        if col not in existing_columns
-    }
-
-    if missing_columns:
-        for col_name, col_type in missing_columns.items():
-            print(f"📝 Ajout de la colonne manquante: {col_name} ({col_type})")
-            spark.sql(f"ALTER TABLE {full_table_name} ADD COLUMNS ({col_name} {col_type})")
-        print(f"✅ Migration du schéma terminée: {len(missing_columns)} colonne(s) ajoutée(s)")
-    else:
-        print(f"ℹ️ Schéma à jour, aucune migration nécessaire")
+    print(f"ℹ️ Schéma à jour, aucune migration nécessaire")
 
 
 def truncate_media_data(catalog: str, schema: str, table_name: str, site_id: str = None):
@@ -457,8 +421,6 @@ def upsert_media_data(df: DataFrame, catalog: str, schema: str, table_name: str)
             height = source.height,
             class_list = source.class_list,
             status = source.status,
-            client_associated = source.client_associated,
-            taxonomy_company_id = source.taxonomy_company_id,
             language = source.language,
             date_created = source.date_created,
             date_modified = source.date_modified,
