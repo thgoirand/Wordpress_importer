@@ -136,9 +136,6 @@ CONTENT_SCHEMA = StructType([
 
     # --- DONNEES BRUTES ---
     StructField("raw_json", StringType(), True),
-
-    # --- AI FORMATTING ---
-    StructField("date_formatted", TimestampType(), True),
 ])
 
 # COMMAND ----------
@@ -224,9 +221,6 @@ def transform_content_item(item: Dict, content_type: str, site_id: str, site_con
 
         # --- DONNEES BRUTES ---
         "raw_json": json.dumps(item, ensure_ascii=False),
-
-        # --- AI FORMATTING ---
-        "date_formatted": None,
     }
 
 # COMMAND ----------
@@ -430,14 +424,3 @@ display(spark.sql(f"""
     LIMIT 20
 """))
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 9. AI functions (optionnel)
-# MAGIC
-# MAGIC Le formatage AI des contenus est realise dans un notebook dedie `ai_formatter`
-# MAGIC afin d'eviter les timeouts du serverless compute sur de gros volumes.
-# MAGIC
-# MAGIC Le notebook traite les elements par batch de 5 via AI_QUERY.
-# MAGIC
-# MAGIC **Usage:** Executer `ai_formatter` apres l'import des contenus.

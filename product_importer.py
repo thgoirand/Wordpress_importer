@@ -88,9 +88,6 @@ CONTENT_SCHEMA = StructType([
 
     # --- DONNEES BRUTES ---
     StructField("raw_json", StringType(), True),
-
-    # --- AI FORMATTING ---
-    StructField("date_formatted", TimestampType(), True),
 ])
 
 # COMMAND ----------
@@ -271,9 +268,6 @@ def transform_product_item(item: Dict, site_id: str, site_config: Dict) -> Dict:
 
         # --- DONNEES BRUTES ---
         "raw_json": json.dumps(item, ensure_ascii=False),
-
-        # --- AI FORMATTING ---
-        "date_formatted": None,
     }
 
 # COMMAND ----------
