@@ -378,7 +378,7 @@ def run_product_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IMPORT,
         # Recupere le dernier ID pour import incremental
         since_id = None
         if incremental:
-            since_id = get_last_imported_id(catalog, schema, table_name, site_id)
+            since_id = get_last_imported_id(catalog, schema, table_name, site_id, "product")
             if since_id:
                 print(f"Mode incremental - depuis ID: {since_id}")
 
