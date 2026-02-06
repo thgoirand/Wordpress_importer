@@ -383,6 +383,35 @@ def create_media_table_if_not_exists(catalog: str, schema: str, table_name: str)
         print(f"✅ Table {full_table_name} créée avec succès")
     else:
         print(f"ℹ️ Table {full_table_name} existe déjà")
+        _migrate_media_table_schema(full_table_name)
+
+
+def _migrate_media_table_schema(full_table_name: str):
+    """
+    Vérifie que la table existante possède toutes les colonnes du schéma attendu.
+    Ajoute les colonnes manquantes via ALTER TABLE si nécessaire.
+    """
+    # Mapping des noms de colonnes du schéma vers leur type SQL
+    schema_column_types = {
+        "client_associated": "STRING",
+        "taxonomy_company_id": "INT",
+    }
+
+    existing_columns = {f.name for f in spark.table(full_table_name).schema.fields}
+
+    missing_columns = {
+        col: sql_type
+        for col, sql_type in schema_column_types.items()
+        if col not in existing_columns
+    }
+
+    if missing_columns:
+        for col_name, col_type in missing_columns.items():
+            print(f"📝 Ajout de la colonne manquante: {col_name} ({col_type})")
+            spark.sql(f"ALTER TABLE {full_table_name} ADD COLUMNS ({col_name} {col_type})")
+        print(f"✅ Migration du schéma terminée: {len(missing_columns)} colonne(s) ajoutée(s)")
+    else:
+        print(f"ℹ️ Schéma à jour, aucune migration nécessaire")
 
 
 def truncate_media_data(catalog: str, schema: str, table_name: str, site_id: str = None):
