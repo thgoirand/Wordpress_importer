@@ -58,12 +58,12 @@ BATCH_SIZE = 5
 # Nombre max d'items a traiter (None = tout traiter, ex: 5 pour les tests)
 MAX_ITEMS = None
 
-# Prompt systeme pour le formatage markdown
+# System prompt for markdown formatting
 AI_PROMPT = (
-    "Tu es un expert en formatage de contenu web. "
-    "Convertis ce JSON WordPress en markdown propre et structure. "
-    "Utilise des titres (##, ###), des listes, et formate correctement les liens. "
-    "Retourne uniquement le markdown, sans explications. "
+    "You are an expert in web content formatting. "
+    "Convert this WordPress JSON into clean, well-structured markdown. "
+    "Use headings (##, ###), lists, and format links properly. "
+    "Return only the markdown, without any explanations. "
     "JSON: "
 )
 
@@ -208,7 +208,7 @@ def get_items_to_process(gold_table: str) -> list:
 df_to_process = get_items_to_process(GOLD_TABLE_FULL)
 total_count = df_to_process.count()
 
-print(f"{total_count} article(s) de blog a traiter (gold)")
+print(f"{total_count} blog article(s) to process (gold)")
 display(df_to_process)
 
 # COMMAND ----------
@@ -309,11 +309,11 @@ def process_batch_classify_light(gold_table: str, batch_ids: list, ai_model: str
 
 def get_uncertain_ids(gold_table: str, candidate_ids: list) -> list:
     """
-    Identifie les items ayant au moins un champ UNCERTAIN apres la pass 1.
-    Un item est UNCERTAIN si :
+    Identifies items with at least one UNCERTAIN field after pass 1.
+    An item is UNCERTAIN if:
     - funnel_stage = 'UNCERTAIN'
-    - has_regulatory_content IS NULL (etait UNCERTAIN)
-    - has_country_specific_context IS NULL (etait UNCERTAIN)
+    - has_regulatory_content IS NULL (was UNCERTAIN)
+    - has_country_specific_context IS NULL (was UNCERTAIN)
     """
     ids_str = ", ".join(str(id_val) for id_val in candidate_ids)
     query = f"""
@@ -328,6 +328,60 @@ def get_uncertain_ids(gold_table: str, candidate_ids: list) -> list:
     """
     rows = spark.sql(query).collect()
     return [row["id"] for row in rows]
+
+
+def display_uncertain_details(gold_table: str, candidate_ids: list):
+    """
+    Displays detailed information about UNCERTAIN items after pass 1,
+    showing which fields are uncertain for each item.
+    Useful to evaluate whether the two-pass approach is relevant.
+    """
+    ids_str = ", ".join(str(id_val) for id_val in candidate_ids)
+    query = f"""
+    SELECT
+        id,
+        site_id,
+        title,
+        LEFT(COALESCE(meta_description, excerpt, ''), 120) AS description_preview,
+        CASE WHEN has_regulatory_content IS NULL THEN 'UNCERTAIN' ELSE CAST(has_regulatory_content AS STRING) END AS regulatory,
+        CASE WHEN has_country_specific_context IS NULL THEN 'UNCERTAIN' ELSE CAST(has_country_specific_context AS STRING) END AS country_specific,
+        funnel_stage
+    FROM {gold_table}
+    WHERE id IN ({ids_str})
+      AND (
+          funnel_stage = 'UNCERTAIN'
+          OR has_regulatory_content IS NULL
+          OR has_country_specific_context IS NULL
+      )
+    ORDER BY site_id, id
+    """
+    df_uncertain = spark.sql(query)
+    nb = df_uncertain.count()
+
+    if nb == 0:
+        print("  No UNCERTAIN items found.")
+        return
+
+    print(f"\n  Detail of {nb} UNCERTAIN item(s):")
+    print(f"  {'-'*80}")
+
+    rows = df_uncertain.collect()
+    for row in rows:
+        uncertain_fields = []
+        if row["regulatory"] == "UNCERTAIN":
+            uncertain_fields.append("regulatory")
+        if row["country_specific"] == "UNCERTAIN":
+            uncertain_fields.append("country_specific")
+        if row["funnel_stage"] == "UNCERTAIN":
+            uncertain_fields.append("funnel_stage")
+
+        print(f"  ID {row['id']} [{row['site_id']}] - {row['title']}")
+        print(f"    Description: {row['description_preview']}")
+        print(f"    Uncertain fields: {', '.join(uncertain_fields)}")
+        print(f"    Values -> regulatory={row['regulatory']}, country={row['country_specific']}, funnel={row['funnel_stage']}")
+
+    print(f"  {'-'*80}")
+    display(df_uncertain)
 
 
 def process_batch_classify_deep(gold_table: str, batch_ids: list, ai_model: str,
@@ -405,54 +459,59 @@ def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
     total = len(all_ids)
 
     if total == 0:
-        print("Aucun element a traiter.")
+        print("No items to process.")
         return 0
 
     batches = [all_ids[i:i + batch_size] for i in range(0, total, batch_size)]
     nb_batches = len(batches)
 
-    print(f"Traitement de {total} element(s) en {nb_batches} batch(s) de {batch_size} max")
-    print(f"Modele: {ai_model}")
-    print(f"Table gold: {gold_table}")
+    print(f"Processing {total} item(s) in {nb_batches} batch(es) of {batch_size} max")
+    print(f"Model: {ai_model}")
+    print(f"Gold table: {gold_table}")
     print(f"{'='*60}")
 
-    # --- Phase 1 : Generation markdown ---
-    print(f"\n--- Phase 1/3 : Generation markdown ---")
+    # --- Phase 1: Markdown generation ---
+    print(f"\n--- Phase 1/3: Markdown generation ---")
     processed = 0
     for idx, batch_ids in enumerate(batches, start=1):
         batch_len = len(batch_ids)
-        print(f"  Batch {idx}/{nb_batches} ({batch_len} element(s))...")
+        print(f"  Batch {idx}/{nb_batches} ({batch_len} item(s))...")
         try:
             process_batch_markdown(gold_table, batch_ids, ai_model, ai_prompt)
             processed += batch_len
-            print(f"    OK - {processed}/{total} markdown genere(s)")
+            print(f"    OK - {processed}/{total} markdown generated")
         except Exception as e:
-            print(f"    ERREUR batch {idx}: {e}")
+            print(f"    ERROR batch {idx}: {e}")
             print(f"    IDs: {batch_ids}")
             continue
 
-    # --- Phase 2 : Classification legere (titre + description) ---
-    print(f"\n--- Phase 2/3 : Classification legere (titre + description) ---")
+    # --- Phase 2: Light classification (title + description) ---
+    print(f"\n--- Phase 2/3: Light classification (title + description) ---")
     classified_light = 0
     for idx, batch_ids in enumerate(batches, start=1):
         batch_len = len(batch_ids)
-        print(f"  Batch {idx}/{nb_batches} ({batch_len} element(s))...")
+        print(f"  Batch {idx}/{nb_batches} ({batch_len} item(s))...")
         try:
             process_batch_classify_light(gold_table, batch_ids, ai_model, ai_prompt_light)
             classified_light += batch_len
-            print(f"    OK - {classified_light}/{total} classifie(s) (pass 1)")
+            print(f"    OK - {classified_light}/{total} classified (pass 1)")
         except Exception as e:
-            print(f"    ERREUR batch {idx}: {e}")
+            print(f"    ERROR batch {idx}: {e}")
             print(f"    IDs: {batch_ids}")
             continue
 
-    # --- Phase 3 : Classification profonde (contenu complet, UNCERTAIN seulement) ---
+    # --- Uncertain items detail (to evaluate two-pass relevance) ---
     uncertain_ids = get_uncertain_ids(gold_table, all_ids)
     nb_uncertain = len(uncertain_ids)
-    print(f"\n--- Phase 3/3 : Classification profonde ({nb_uncertain} item(s) UNCERTAIN) ---")
+
+    print(f"\n--- Uncertain items detail after pass 1: {nb_uncertain}/{total} ---")
+    display_uncertain_details(gold_table, all_ids)
+
+    # --- Phase 3: Deep classification (full content, UNCERTAIN only) ---
+    print(f"\n--- Phase 3/3: Deep classification ({nb_uncertain} UNCERTAIN item(s)) ---")
 
     if nb_uncertain == 0:
-        print("  Aucun item UNCERTAIN. Pass 2 non necessaire.")
+        print("  No UNCERTAIN items. Pass 2 not needed.")
     else:
         deep_batches = [uncertain_ids[i:i + batch_size]
                         for i in range(0, nb_uncertain, batch_size)]
@@ -461,21 +520,21 @@ def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
 
         for idx, batch_ids in enumerate(deep_batches, start=1):
             batch_len = len(batch_ids)
-            print(f"  Batch {idx}/{nb_deep_batches} ({batch_len} element(s))...")
+            print(f"  Batch {idx}/{nb_deep_batches} ({batch_len} item(s))...")
             try:
                 process_batch_classify_deep(gold_table, batch_ids, ai_model, ai_prompt_deep)
                 classified_deep += batch_len
-                print(f"    OK - {classified_deep}/{nb_uncertain} re-classifie(s) (pass 2)")
+                print(f"    OK - {classified_deep}/{nb_uncertain} re-classified (pass 2)")
             except Exception as e:
-                print(f"    ERREUR batch {idx}: {e}")
+                print(f"    ERROR batch {idx}: {e}")
                 print(f"    IDs: {batch_ids}")
                 continue
 
     print(f"\n{'='*60}")
-    print(f"Pipeline termine:")
-    print(f"  - Markdown genere : {processed}/{total}")
-    print(f"  - Classification pass 1 : {classified_light}/{total}")
-    print(f"  - Items UNCERTAIN -> pass 2 : {nb_uncertain}")
+    print(f"Pipeline completed:")
+    print(f"  - Markdown generated: {processed}/{total}")
+    print(f"  - Classification pass 1: {classified_light}/{total}")
+    print(f"  - UNCERTAIN items -> pass 2: {nb_uncertain}")
     print(f"{'='*60}")
 
     return processed

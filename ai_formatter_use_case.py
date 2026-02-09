@@ -46,26 +46,26 @@ BATCH_SIZE = 5
 # Nombre max d'items a traiter (None = tout traiter, ex: 5 pour les tests)
 MAX_ITEMS = None
 
-# Prompt pour le formatage du contenu markdown
+# System prompt for use case markdown formatting
 AI_PROMPT_CONTENT = (
-    "Tu es un expert en formatage de contenu web. "
-    "Convertis ce JSON WordPress d'une etude de cas en markdown propre et structure. "
-    "Utilise des titres (##, ###), des listes, et formate correctement les liens. "
-    "Mets en valeur les resultats cles et les temoignages clients. "
-    "Retourne uniquement le markdown, sans explications. "
+    "You are an expert in web content formatting. "
+    "Convert this WordPress JSON of a case study into clean, well-structured markdown. "
+    "Use headings (##, ###), lists, and format links properly. "
+    "Highlight key results and customer testimonials. "
+    "Return only the markdown, without any explanations. "
     "JSON: "
 )
 
-# Prompt pour l'extraction des key figures
+# System prompt for key figures extraction
 AI_PROMPT_KEY_FIGURES = (
-    "Tu es un expert en analyse de contenu marketing. "
-    "A partir de ce JSON WordPress d'une etude de cas, extrais les chiffres cles (key figures). "
-    "Les key figures sont des indicateurs quantitatifs marquants : pourcentages d'amelioration, "
-    "gains de temps, economies realisees, nombre d'utilisateurs, ROI, etc. "
-    "Retourne UNIQUEMENT un JSON array de strings, chaque string etant un chiffre cle avec son contexte. "
-    "Exemple: [\"30% de reduction des couts\", \"2x plus rapide\", \"500 utilisateurs deployes\"]. "
-    "Si aucun chiffre cle n'est trouve, retourne un array vide: []. "
-    "Ne retourne rien d'autre que le JSON array. "
+    "You are an expert in marketing content analysis. "
+    "From this WordPress JSON of a case study, extract the key figures. "
+    "Key figures are notable quantitative indicators: improvement percentages, "
+    "time savings, cost savings, number of users, ROI, etc. "
+    "Return ONLY a JSON array of strings, each string being a key figure with its context. "
+    "Example: [\"30% cost reduction\", \"2x faster\", \"500 users deployed\"]. "
+    "If no key figures are found, return an empty array: []. "
+    "Return nothing other than the JSON array. "
     "JSON: "
 )
 
@@ -133,7 +133,7 @@ def get_items_to_process(gold_table: str) -> list:
 df_to_process = get_items_to_process(GOLD_TABLE_FULL)
 total_count = df_to_process.count()
 
-print(f"{total_count} use case(s) a traiter (gold)")
+print(f"{total_count} use case(s) to process (gold)")
 display(df_to_process)
 
 # COMMAND ----------
@@ -208,35 +208,35 @@ def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
     total = len(all_ids)
 
     if total == 0:
-        print("Aucun use case a traiter.")
+        print("No use cases to process.")
         return 0
 
     batches = [all_ids[i:i + batch_size] for i in range(0, total, batch_size)]
     nb_batches = len(batches)
 
-    print(f"Traitement de {total} use case(s) en {nb_batches} batch(s) de {batch_size} max")
-    print(f"Modele: {ai_model}")
-    print(f"Table gold: {gold_table}")
+    print(f"Processing {total} use case(s) in {nb_batches} batch(es) of {batch_size} max")
+    print(f"Model: {ai_model}")
+    print(f"Gold table: {gold_table}")
     print(f"{'='*60}")
 
     processed = 0
 
     for idx, batch_ids in enumerate(batches, start=1):
         batch_len = len(batch_ids)
-        print(f"\nBatch {idx}/{nb_batches} ({batch_len} element(s))...")
+        print(f"\nBatch {idx}/{nb_batches} ({batch_len} item(s))...")
 
         try:
             process_batch(gold_table, batch_ids, ai_model,
                          ai_prompt_content, ai_prompt_key_figures)
             processed += batch_len
-            print(f"  OK - {processed}/{total} traite(s)")
+            print(f"  OK - {processed}/{total} processed")
         except Exception as e:
-            print(f"  ERREUR sur le batch {idx}: {e}")
-            print(f"  IDs concernes: {batch_ids}")
+            print(f"  ERROR on batch {idx}: {e}")
+            print(f"  IDs: {batch_ids}")
             continue
 
     print(f"\n{'='*60}")
-    print(f"Formatage termine: {processed}/{total} use case(s) traite(s)")
+    print(f"Formatting completed: {processed}/{total} use case(s) processed")
 
     return processed
 
