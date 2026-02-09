@@ -12,12 +12,13 @@
 # MAGIC
 # MAGIC **Scope:** Articles de blog (`post`) uniquement.
 # MAGIC
-# MAGIC **Pipeline AI en 2 etapes (CTE) :**
+# MAGIC **Pipeline AI en 3 etapes (CTE) :**
 # MAGIC 1. Generation du markdown a partir du `raw_json`
-# MAGIC 2. Classification du **markdown genere** :
+# MAGIC 2. Classification du **markdown genere** via un prompt unique retournant du JSON :
 # MAGIC    - `has_regulatory_content` : reference a une reglementation ou texte de loi
 # MAGIC    - `has_country_specific_context` : contexte specifique a un pays ou marche
 # MAGIC    - `funnel_stage` : stade du funnel marketing (TOFU / MOFU / BOFU)
+# MAGIC 3. Parsing du JSON de classification pour alimenter les champs
 # MAGIC
 # MAGIC **Pre-requis:** Executer `blog_importer` avant pour alimenter la table silver.
 
@@ -62,44 +63,28 @@ AI_PROMPT = (
     "JSON: "
 )
 
-# Prompt pour la classification reglementaire
-AI_PROMPT_REGULATORY = (
-    "Tu es un expert en analyse de contenu. "
-    "Analyse ce contenu markdown d'un article de blog et determine s'il contient des references "
-    "a une reglementation, un texte de loi, une directive, une norme, un decret ou tout cadre juridique/legal. "
-    "Exemples : RGPD, DORA, loi de finances, code du travail, directive europeenne, norme ISO, etc. "
-    "Reponds UNIQUEMENT par 'true' ou 'false', sans aucune explication. "
-    "Contenu: "
-)
-
-# Prompt pour la classification contexte pays/marche
-AI_PROMPT_COUNTRY_SPECIFIC = (
-    "Tu es un expert en analyse de contenu. "
-    "Analyse ce contenu markdown d'un article de blog et determine s'il presente un contexte "
-    "specifique a un pays ou un marche particulier (par exemple : fiscalite francaise, marche espagnol, "
-    "legislation italienne, systeme de paie britannique, etc.). "
-    "Un contenu generique ou international sans ancrage national doit retourner false. "
-    "Reponds UNIQUEMENT par 'true' ou 'false', sans aucune explication. "
-    "Contenu: "
-)
-
-# Prompt pour la classification funnel stage (TOFU / MOFU / BOFU)
-AI_PROMPT_FUNNEL_STAGE = (
-    "Tu es un expert en marketing B2B et en strategie de contenu pour l'achat de logiciels en ligne. "
-    "Analyse ce contenu markdown d'un article de blog et determine a quel stade du funnel marketing "
-    "il s'adresse pour un prospect dans un parcours d'achat de logiciel. "
-    "Les 3 stades possibles sont : "
-    "- TOFU (Top of Funnel) : contenu de sensibilisation et decouverte. Le prospect cherche a comprendre "
-    "un sujet, une problematique ou une tendance. Exemples : articles educatifs, guides generaux, "
-    "definitions de concepts, tendances du marche, bonnes pratiques generales. "
-    "- MOFU (Middle of Funnel) : contenu d'evaluation et de consideration. Le prospect a identifie son besoin "
-    "et compare les solutions possibles. Exemples : comparatifs de solutions, guides de choix, "
-    "criteres de selection, cas d'usage detailles, webinars thematiques, livres blancs approfondis. "
-    "- BOFU (Bottom of Funnel) : contenu de decision et de conversion. Le prospect est pret a acheter "
-    "et cherche a valider son choix. Exemples : demos produit, etudes de cas clients avec resultats chiffres, "
-    "temoignages clients, fiches produit detaillees, offres d'essai, ROI et benefices concrets. "
-    "Reponds UNIQUEMENT par 'TOFU', 'MOFU' ou 'BOFU', sans aucune explication. "
-    "Contenu: "
+# Prompt unique de classification (regulatory + country_specific + funnel_stage)
+AI_PROMPT_CLASSIFICATION = (
+    "You are an expert in content analysis and B2B marketing for online software purchasing. "
+    "Analyze this markdown blog article content and answer the following 3 questions.\n\n"
+    "1. **has_regulatory_content** (true/false): Does the content reference any regulation, law, "
+    "directive, standard, decree, or any legal/juridical framework? "
+    "Positive examples: GDPR, DORA, finance law, labor code, European directive, ISO standard.\n\n"
+    "2. **has_country_specific_context** (true/false): Does the content present a context specific "
+    "to a particular country or market (e.g. French taxation, Spanish market, Italian legislation, "
+    "British payroll system, etc.)? "
+    "Generic or international content without national anchoring must return false.\n\n"
+    "3. **funnel_stage** (TOFU/MOFU/BOFU): Which marketing funnel stage does this content target "
+    "for a prospect in a software purchasing journey?\n"
+    "- TOFU (Top of Funnel): awareness and discovery. Educational articles, general guides, "
+    "concept definitions, market trends, general best practices.\n"
+    "- MOFU (Middle of Funnel): evaluation and consideration. Solution comparisons, selection guides, "
+    "selection criteria, detailed use cases, thematic webinars, in-depth whitepapers.\n"
+    "- BOFU (Bottom of Funnel): decision and conversion. Product demos, customer case studies with "
+    "measurable results, customer testimonials, detailed product sheets, trial offers, concrete ROI.\n\n"
+    "Respond ONLY with a valid JSON object (no markdown, no explanation), in this format:\n"
+    '{\"has_regulatory_content\": true, \"has_country_specific_context\": false, \"funnel_stage\": \"TOFU\"}\n\n'
+    "Content: "
 )
 
 # COMMAND ----------
@@ -181,22 +166,19 @@ display(df_to_process)
 # COMMAND ----------
 
 def process_batch(gold_table: str, batch_ids: list, ai_model: str,
-                  ai_prompt: str, ai_prompt_regulatory: str,
-                  ai_prompt_country_specific: str,
-                  ai_prompt_funnel_stage: str):
+                  ai_prompt: str, ai_prompt_classification: str):
     """
     Traite un batch d'elements via AI_QUERY et met a jour la table gold via MERGE.
-    Utilise un CTE en 2 etapes :
+    Utilise un CTE en 3 etapes :
     1. Genere le content_text (markdown) a partir du raw_json
-    2. Classifie le markdown genere (regulatory + country_specific + funnel_stage)
+    2. Classifie le markdown via un prompt unique retournant du JSON
+    3. Parse le JSON de classification pour extraire les champs
     """
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
 
     # Echapper les apostrophes pour SQL (' -> '')
     ai_prompt = ai_prompt.replace("'", "''")
-    ai_prompt_regulatory = ai_prompt_regulatory.replace("'", "''")
-    ai_prompt_country_specific = ai_prompt_country_specific.replace("'", "''")
-    ai_prompt_funnel_stage = ai_prompt_funnel_stage.replace("'", "''")
+    ai_prompt_classification = ai_prompt_classification.replace("'", "''")
 
     merge_query = f"""
     MERGE INTO {gold_table} AS target
@@ -213,33 +195,29 @@ def process_batch(gold_table: str, batch_ids: list, ai_model: str,
                 ) AS new_content_text
             FROM {gold_table}
             WHERE id IN ({ids_str})
+        ),
+        classified AS (
+            SELECT
+                mg.id,
+                mg.new_content_text,
+                AI_QUERY(
+                    '{ai_model}',
+                    CONCAT(
+                        '{ai_prompt_classification}',
+                        mg.new_content_text
+                    )
+                ) AS classification_json
+            FROM markdown_generated mg
         )
         SELECT
-            mg.id,
-            mg.new_content_text,
-            AI_QUERY(
-                '{ai_model}',
-                CONCAT(
-                    '{ai_prompt_regulatory}',
-                    mg.new_content_text
-                )
-            ) AS new_regulatory_raw,
-            AI_QUERY(
-                '{ai_model}',
-                CONCAT(
-                    '{ai_prompt_country_specific}',
-                    mg.new_content_text
-                )
-            ) AS new_country_specific_raw,
-            AI_QUERY(
-                '{ai_model}',
-                CONCAT(
-                    '{ai_prompt_funnel_stage}',
-                    mg.new_content_text
-                )
-            ) AS new_funnel_stage_raw,
+            c.id,
+            c.new_content_text,
+            c.classification_json,
+            GET_JSON_OBJECT(c.classification_json, '$.has_regulatory_content') AS new_regulatory_raw,
+            GET_JSON_OBJECT(c.classification_json, '$.has_country_specific_context') AS new_country_specific_raw,
+            GET_JSON_OBJECT(c.classification_json, '$.funnel_stage') AS new_funnel_stage_raw,
             CURRENT_TIMESTAMP() AS new_date_formatted
-        FROM markdown_generated mg
+        FROM classified c
     ) AS source
     ON target.id = source.id
     WHEN MATCHED THEN UPDATE SET
@@ -258,9 +236,7 @@ def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
                       max_items: int = MAX_ITEMS,
                       ai_model: str = AI_MODEL,
                       ai_prompt: str = AI_PROMPT,
-                      ai_prompt_regulatory: str = AI_PROMPT_REGULATORY,
-                      ai_prompt_country_specific: str = AI_PROMPT_COUNTRY_SPECIFIC,
-                      ai_prompt_funnel_stage: str = AI_PROMPT_FUNNEL_STAGE):
+                      ai_prompt_classification: str = AI_PROMPT_CLASSIFICATION):
     """
     Execute le formatage AI et la classification sur tous les elements en attente dans la table gold.
     max_items: nombre max d'items a traiter (None = tout traiter).
@@ -293,8 +269,7 @@ def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
 
         try:
             process_batch(gold_table, batch_ids, ai_model, ai_prompt,
-                         ai_prompt_regulatory, ai_prompt_country_specific,
-                         ai_prompt_funnel_stage)
+                         ai_prompt_classification)
             processed += batch_len
             print(f"  OK - {processed}/{total} traite(s)")
         except Exception as e:
