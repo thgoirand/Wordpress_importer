@@ -699,7 +699,7 @@ def upsert_gold_from_silver(catalog: str, schema: str, gold_table: str,
     full_gold = f"{catalog}.{schema}.{gold_table}"
     full_silver = f"{catalog}.{schema}.{silver_table}"
 
-    type_filter = f"AND source.content_type = '{content_type}'" if content_type else ""
+    type_filter = f"AND content_type = '{content_type}'" if content_type else ""
 
     spark.sql(f"""
         MERGE INTO {full_gold} AS target
