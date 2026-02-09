@@ -1,19 +1,18 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC
-# MAGIC # Formatage AI des Landing Pages WordPress
+# MAGIC # Formatage AI des Landing Pages WordPress (Silver -> Gold)
 # MAGIC
 # MAGIC Ce notebook formate les contenus landing pages bruts (raw_json) en markdown structure
 # MAGIC via `AI_QUERY` (Databricks AI Functions).
 # MAGIC
+# MAGIC **Architecture Medallion :**
+# MAGIC - **Source** : table silver `cegid_website_pages` (contenus standardises)
+# MAGIC - **Cible** : table gold `gold_cegid_website_pages` (contenus enrichis par AI)
+# MAGIC
 # MAGIC **Scope:** Landing pages (`landing_page`) uniquement.
-# MAGIC Chaque content type dispose de son propre formatter.
 # MAGIC
-# MAGIC **Pourquoi un notebook separe ?**
-# MAGIC Les appels AI_QUERY sur de gros volumes provoquent des timeouts du serverless compute.
-# MAGIC Ce notebook traite les elements par batch (defaut: 5) pour eviter ce probleme.
-# MAGIC
-# MAGIC **Pre-requis:** Executer `landing_page_importer` avant pour alimenter la table `cegid_website_pages`.
+# MAGIC **Pre-requis:** Executer `landing_page_importer` avant pour alimenter la table silver.
 
 # COMMAND ----------
 
@@ -31,13 +30,17 @@
 
 # COMMAND ----------
 
-# Table source / cible
-SOURCE_TABLE = f"{DATABRICKS_CATALOG}.{DATABRICKS_SCHEMA}.cegid_website_pages"
+# Tables source (silver) et cible (gold)
+SILVER_TABLE_FULL = f"{DATABRICKS_CATALOG}.{DATABRICKS_SCHEMA}.{SILVER_TABLE}"
+GOLD_TABLE_FULL = f"{DATABRICKS_CATALOG}.{DATABRICKS_SCHEMA}.{GOLD_TABLE}"
+
+# Type de contenu traite
+CONTENT_TYPE = "landing_page"
 
 # Modele AI a utiliser
 AI_MODEL = "databricks-claude-haiku-4-5"
 
-# Taille des batchs (nombre d'elements traites par requete AI_QUERY)
+# Taille des batchs
 BATCH_SIZE = 5
 
 # Prompt systeme pour le formatage des landing pages
@@ -54,18 +57,38 @@ AI_PROMPT = (
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Identification des elements a traiter
+# MAGIC ## 3. Initialisation de la table gold
 
 # COMMAND ----------
 
-def get_items_to_process(source_table: str) -> list:
+# Cree la table gold si necessaire
+create_delta_table(
+    catalog=DATABRICKS_CATALOG,
+    schema=DATABRICKS_SCHEMA,
+    table_name=GOLD_TABLE,
+    spark_schema=GOLD_SCHEMA,
+    partition_by=["site_id", "content_type"]
+)
+
+# Synchronise les donnees silver -> gold
+upsert_gold_from_silver(
+    catalog=DATABRICKS_CATALOG,
+    schema=DATABRICKS_SCHEMA,
+    gold_table=GOLD_TABLE,
+    silver_table=SILVER_TABLE,
+    content_type=CONTENT_TYPE
+)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 4. Identification des elements a traiter
+
+# COMMAND ----------
+
+def get_items_to_process(gold_table: str) -> list:
     """
-    Identifie les landing pages qui necessitent un formatage AI.
-    Criteres:
-    - content_type = 'landing_page'
-    - raw_json non vide
-    - content_text vide (nouveau) OU modifie recemment sans re-formatage
-    Retourne la liste des IDs a traiter.
+    Identifie les landing pages dans la table gold qui necessitent un formatage AI.
     """
     query = f"""
     SELECT
@@ -77,10 +100,10 @@ def get_items_to_process(source_table: str) -> list:
             WHEN content_text IS NULL OR content_text = '' THEN 'Nouveau'
             ELSE 'Update'
         END AS statut
-    FROM {source_table}
+    FROM {gold_table}
     WHERE
         raw_json IS NOT NULL AND raw_json != ''
-        AND content_type = 'landing_page'
+        AND content_type = '{CONTENT_TYPE}'
         AND (
             content_text IS NULL
             OR content_text = ''
@@ -92,34 +115,27 @@ def get_items_to_process(source_table: str) -> list:
     return spark.sql(query)
 
 
-df_to_process = get_items_to_process(SOURCE_TABLE)
+df_to_process = get_items_to_process(GOLD_TABLE_FULL)
 total_count = df_to_process.count()
 
-print(f"{total_count} landing page(s) a traiter")
+print(f"{total_count} landing page(s) a traiter (gold)")
 display(df_to_process)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4. Traitement par batch
+# MAGIC ## 5. Traitement par batch
 
 # COMMAND ----------
 
-def process_batch(source_table: str, batch_ids: list, ai_model: str, ai_prompt: str):
+def process_batch(gold_table: str, batch_ids: list, ai_model: str, ai_prompt: str):
     """
-    Traite un batch d'elements via AI_QUERY et met a jour la table via MERGE.
-
-    Args:
-        source_table: Nom complet de la table Delta
-        batch_ids: Liste des IDs (LongType) a traiter dans ce batch
-        ai_model: Nom du modele AI Databricks
-        ai_prompt: Prompt de formatage
+    Traite un batch d'elements via AI_QUERY et met a jour la table gold via MERGE.
     """
-    # Construit la clause IN avec les IDs du batch
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
 
     merge_query = f"""
-    MERGE INTO {source_table} AS target
+    MERGE INTO {gold_table} AS target
     USING (
         SELECT
             id,
@@ -131,7 +147,7 @@ def process_batch(source_table: str, batch_ids: list, ai_model: str, ai_prompt: 
                 )
             ) AS new_content_text,
             CURRENT_TIMESTAMP() AS new_date_formatted
-        FROM {source_table}
+        FROM {gold_table}
         WHERE id IN ({ids_str})
     ) AS source
     ON target.id = source.id
@@ -143,24 +159,14 @@ def process_batch(source_table: str, batch_ids: list, ai_model: str, ai_prompt: 
     spark.sql(merge_query)
 
 
-def run_ai_formatting(source_table: str = SOURCE_TABLE,
+def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
                       batch_size: int = BATCH_SIZE,
                       ai_model: str = AI_MODEL,
                       ai_prompt: str = AI_PROMPT):
     """
-    Execute le formatage AI sur toutes les landing pages en attente, par batch.
-
-    Args:
-        source_table: Nom complet de la table Delta
-        batch_size: Nombre d'elements par batch
-        ai_model: Nom du modele AI Databricks
-        ai_prompt: Prompt de formatage
-
-    Returns:
-        Nombre total d'elements traites
+    Execute le formatage AI sur toutes les landing pages en attente dans la table gold.
     """
-    # Recupere les IDs a traiter
-    df = get_items_to_process(source_table)
+    df = get_items_to_process(gold_table)
     all_ids = [row["id"] for row in df.select("id").collect()]
     total = len(all_ids)
 
@@ -168,12 +174,12 @@ def run_ai_formatting(source_table: str = SOURCE_TABLE,
         print("Aucune landing page a traiter.")
         return 0
 
-    # Decoupe en batchs
     batches = [all_ids[i:i + batch_size] for i in range(0, total, batch_size)]
     nb_batches = len(batches)
 
     print(f"Traitement de {total} landing page(s) en {nb_batches} batch(s) de {batch_size} max")
     print(f"Modele: {ai_model}")
+    print(f"Table gold: {gold_table}")
     print(f"{'='*60}")
 
     processed = 0
@@ -183,13 +189,12 @@ def run_ai_formatting(source_table: str = SOURCE_TABLE,
         print(f"\nBatch {idx}/{nb_batches} ({batch_len} element(s))...")
 
         try:
-            process_batch(source_table, batch_ids, ai_model, ai_prompt)
+            process_batch(gold_table, batch_ids, ai_model, ai_prompt)
             processed += batch_len
             print(f"  OK - {processed}/{total} traite(s)")
         except Exception as e:
             print(f"  ERREUR sur le batch {idx}: {e}")
             print(f"  IDs concernes: {batch_ids}")
-            # Continue avec le batch suivant
             continue
 
     print(f"\n{'='*60}")
@@ -200,24 +205,20 @@ def run_ai_formatting(source_table: str = SOURCE_TABLE,
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 5. Execution
+# MAGIC ## 6. Execution
 
 # COMMAND ----------
-
-# =============================================================================
-# Lancer le formatage AI par batch pour les landing pages
-# =============================================================================
 
 total_processed = run_ai_formatting()
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 6. Verification
+# MAGIC ## 7. Verification
 
 # COMMAND ----------
 
-# Apercu des dernieres landing pages formatees
+# Apercu des dernieres landing pages formatees (gold)
 display(spark.sql(f"""
     SELECT
         id,
@@ -225,24 +226,24 @@ display(spark.sql(f"""
         LEFT(content_text, 300) AS content_preview,
         date_formatted,
         date_modified
-    FROM {SOURCE_TABLE}
+    FROM {GOLD_TABLE_FULL}
     WHERE date_formatted IS NOT NULL
-        AND content_type = 'landing_page'
+        AND content_type = '{CONTENT_TYPE}'
     ORDER BY date_formatted DESC
     LIMIT 20
 """))
 
 # COMMAND ----------
 
-# Statistiques de formatage des landing pages
+# Statistiques de formatage des landing pages (gold)
 display(spark.sql(f"""
     SELECT
         site_id,
         COUNT(*) AS total,
         COUNT(date_formatted) AS formatted,
         COUNT(*) - COUNT(date_formatted) AS remaining
-    FROM {SOURCE_TABLE}
-    WHERE content_type = 'landing_page'
+    FROM {GOLD_TABLE_FULL}
+    WHERE content_type = '{CONTENT_TYPE}'
     GROUP BY site_id
     ORDER BY site_id
 """))
