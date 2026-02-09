@@ -75,6 +75,21 @@ WORDPRESS_CONFIG = {
 DATABRICKS_CATALOG = "gdp_cdt_dev_04_gld"
 DATABRICKS_SCHEMA = "sandbox_mkt"
 
+# --- Architecture Medallion : noms de tables ---
+# Bronze : une table par type de contenu (donnees brutes WordPress)
+BRONZE_TABLES = {
+    "post": "bronze_blog",
+    "product": "bronze_product",
+    "landing_page": "bronze_landing_page",
+    "study_case": "bronze_study_case",
+}
+
+# Silver : table unifiee nettoyee et standardisee
+SILVER_TABLE = "cegid_website_pages"
+
+# Gold : table unifiee enrichie par les AI formatters
+GOLD_TABLE = "gold_cegid_website_pages"
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -470,11 +485,264 @@ def get_last_modified_date(catalog: str, schema: str, table_name: str,
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 6. Export des variables pour les autres notebooks
+# MAGIC ## 6. Schemas Medallion (Bronze / Silver / Gold)
+
+# COMMAND ----------
+
+# --- BRONZE SCHEMA ---
+# Schema minimal pour les tables bronze (donnees brutes WordPress)
+BRONZE_SCHEMA = StructType([
+    StructField("id", LongType(), False),
+    StructField("wp_id", IntegerType(), False),
+    StructField("content_type", StringType(), False),
+    StructField("site_id", StringType(), False),
+    StructField("raw_json", StringType(), True),
+    StructField("date_imported", TimestampType(), False),
+])
+
+# --- SILVER SCHEMA ---
+# Schema unifie pour la table silver (contenus nettoyes et standardises)
+SILVER_SCHEMA = StructType([
+    # --- IDENTIFIANTS ---
+    StructField("id", LongType(), False),
+    StructField("wp_id", IntegerType(), False),
+    StructField("content_type", StringType(), False),
+    StructField("site_id", StringType(), False),
+
+    # --- METADONNEES ---
+    StructField("slug", StringType(), True),
+    StructField("url", StringType(), True),
+    StructField("title", StringType(), True),
+
+    # --- SEO ---
+    StructField("meta_description", StringType(), True),
+    StructField("meta_title", StringType(), True),
+    StructField("meta_keyword", StringType(), True),
+    StructField("noindex", BooleanType(), True),
+
+    # --- CONTENU ---
+    StructField("content_raw", StringType(), True),
+    StructField("content_text", StringType(), True),
+    StructField("excerpt", StringType(), True),
+
+    # --- TAXONOMIES ---
+    StructField("categories", ArrayType(IntegerType()), True),
+    StructField("tags", ArrayType(IntegerType()), True),
+    StructField("custom_taxonomies", MapType(StringType(), ArrayType(IntegerType())), True),
+
+    # --- DATES ---
+    StructField("date_published", TimestampType(), True),
+    StructField("date_modified", TimestampType(), True),
+    StructField("date_imported", TimestampType(), False),
+
+    # --- AUTEUR & STATUT ---
+    StructField("status", StringType(), True),
+    StructField("author_id", IntegerType(), True),
+
+    # --- MEDIA ---
+    StructField("featured_image_url", StringType(), True),
+
+    # --- LANGUE ---
+    StructField("language", StringType(), True),
+
+    # --- DONNEES BRUTES ---
+    StructField("raw_json", StringType(), True),
+])
+
+# --- GOLD SCHEMA ---
+# Schema enrichi pour la table gold (contenus + enrichissements AI)
+GOLD_SCHEMA = StructType([
+    # --- IDENTIFIANTS ---
+    StructField("id", LongType(), False),
+    StructField("wp_id", IntegerType(), False),
+    StructField("content_type", StringType(), False),
+    StructField("site_id", StringType(), False),
+
+    # --- METADONNEES ---
+    StructField("slug", StringType(), True),
+    StructField("url", StringType(), True),
+    StructField("title", StringType(), True),
+
+    # --- SEO ---
+    StructField("meta_description", StringType(), True),
+    StructField("meta_title", StringType(), True),
+    StructField("meta_keyword", StringType(), True),
+    StructField("noindex", BooleanType(), True),
+
+    # --- CONTENU ---
+    StructField("content_raw", StringType(), True),
+    StructField("content_text", StringType(), True),
+    StructField("excerpt", StringType(), True),
+
+    # --- TAXONOMIES ---
+    StructField("categories", ArrayType(IntegerType()), True),
+    StructField("tags", ArrayType(IntegerType()), True),
+    StructField("custom_taxonomies", MapType(StringType(), ArrayType(IntegerType())), True),
+
+    # --- DATES ---
+    StructField("date_published", TimestampType(), True),
+    StructField("date_modified", TimestampType(), True),
+    StructField("date_imported", TimestampType(), False),
+    StructField("date_formatted", TimestampType(), True),
+
+    # --- AUTEUR & STATUT ---
+    StructField("status", StringType(), True),
+    StructField("author_id", IntegerType(), True),
+
+    # --- MEDIA ---
+    StructField("featured_image_url", StringType(), True),
+
+    # --- LANGUE ---
+    StructField("language", StringType(), True),
+
+    # --- ENRICHISSEMENTS AI ---
+    StructField("key_figures", ArrayType(StringType()), True),
+    StructField("has_regulatory_content", BooleanType(), True),
+    StructField("has_country_specific_context", BooleanType(), True),
+    StructField("funnel_stage", StringType(), True),
+
+    # --- DONNEES BRUTES ---
+    StructField("raw_json", StringType(), True),
+])
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 7. Fonctions generiques d'upsert (Bronze / Silver / Gold)
+
+# COMMAND ----------
+
+def upsert_bronze(df: DataFrame, catalog: str, schema: str, table_name: str):
+    """
+    Upsert (MERGE) de donnees brutes dans une table bronze.
+    """
+    full_table_name = f"{catalog}.{schema}.{table_name}"
+    df.createOrReplaceTempView("new_bronze")
+
+    spark.sql(f"""
+        MERGE INTO {full_table_name} AS target
+        USING new_bronze AS source
+        ON target.id = source.id
+        WHEN MATCHED THEN
+            UPDATE SET
+                raw_json = source.raw_json,
+                date_imported = source.date_imported
+        WHEN NOT MATCHED THEN
+            INSERT (id, wp_id, content_type, site_id, raw_json, date_imported)
+            VALUES (source.id, source.wp_id, source.content_type, source.site_id,
+                    source.raw_json, source.date_imported)
+    """)
+    print(f"Upsert bronze termine dans {full_table_name}")
+
+
+def upsert_silver(df: DataFrame, catalog: str, schema: str, table_name: str):
+    """
+    Upsert (MERGE) de contenus standardises dans la table silver cegid_website_pages.
+    """
+    full_table_name = f"{catalog}.{schema}.{table_name}"
+    df.createOrReplaceTempView("new_silver")
+
+    spark.sql(f"""
+        MERGE INTO {full_table_name} AS target
+        USING new_silver AS source
+        ON target.id = source.id
+        WHEN MATCHED THEN
+            UPDATE SET
+                title = source.title,
+                content_raw = source.content_raw,
+                content_text = source.content_text,
+                excerpt = source.excerpt,
+                meta_description = source.meta_description,
+                meta_title = source.meta_title,
+                meta_keyword = source.meta_keyword,
+                noindex = source.noindex,
+                categories = source.categories,
+                tags = source.tags,
+                custom_taxonomies = source.custom_taxonomies,
+                date_modified = source.date_modified,
+                date_imported = source.date_imported,
+                status = source.status,
+                featured_image_url = source.featured_image_url,
+                raw_json = source.raw_json
+        WHEN NOT MATCHED THEN
+            INSERT (id, wp_id, content_type, site_id, slug, url, title,
+                    meta_description, meta_title, meta_keyword, noindex,
+                    content_raw, content_text, excerpt,
+                    categories, tags, custom_taxonomies,
+                    date_published, date_modified, date_imported,
+                    status, author_id, featured_image_url, language, raw_json)
+            VALUES (source.id, source.wp_id, source.content_type, source.site_id, source.slug, source.url, source.title,
+                    source.meta_description, source.meta_title, source.meta_keyword, source.noindex,
+                    source.content_raw, source.content_text, source.excerpt,
+                    source.categories, source.tags, source.custom_taxonomies,
+                    source.date_published, source.date_modified, source.date_imported,
+                    source.status, source.author_id, source.featured_image_url, source.language, source.raw_json)
+    """)
+    print(f"Upsert silver termine dans {full_table_name}")
+
+
+def upsert_gold_from_silver(catalog: str, schema: str, gold_table: str,
+                             silver_table: str, content_type: str = None):
+    """
+    Copie les donnees silver vers gold pour les contenus non encore presents dans gold.
+    Permet aux AI formatters de travailler ensuite sur la table gold.
+    """
+    full_gold = f"{catalog}.{schema}.{gold_table}"
+    full_silver = f"{catalog}.{schema}.{silver_table}"
+
+    type_filter = f"AND source.content_type = '{content_type}'" if content_type else ""
+
+    spark.sql(f"""
+        MERGE INTO {full_gold} AS target
+        USING (
+            SELECT * FROM {full_silver}
+            WHERE 1=1 {type_filter}
+        ) AS source
+        ON target.id = source.id
+        WHEN MATCHED THEN
+            UPDATE SET
+                title = source.title,
+                content_raw = source.content_raw,
+                excerpt = source.excerpt,
+                meta_description = source.meta_description,
+                meta_title = source.meta_title,
+                meta_keyword = source.meta_keyword,
+                noindex = source.noindex,
+                categories = source.categories,
+                tags = source.tags,
+                custom_taxonomies = source.custom_taxonomies,
+                date_modified = source.date_modified,
+                date_imported = source.date_imported,
+                status = source.status,
+                featured_image_url = source.featured_image_url,
+                raw_json = source.raw_json
+        WHEN NOT MATCHED THEN
+            INSERT (id, wp_id, content_type, site_id, slug, url, title,
+                    meta_description, meta_title, meta_keyword, noindex,
+                    content_raw, content_text, excerpt,
+                    categories, tags, custom_taxonomies,
+                    date_published, date_modified, date_imported,
+                    status, author_id, featured_image_url, language, raw_json)
+            VALUES (source.id, source.wp_id, source.content_type, source.site_id, source.slug, source.url, source.title,
+                    source.meta_description, source.meta_title, source.meta_keyword, source.noindex,
+                    source.content_raw, source.content_text, source.excerpt,
+                    source.categories, source.tags, source.custom_taxonomies,
+                    source.date_published, source.date_modified, source.date_imported,
+                    source.status, source.author_id, source.featured_image_url, source.language, source.raw_json)
+    """)
+    print(f"Sync silver -> gold termine dans {full_gold}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 8. Export des variables pour les autres notebooks
 # MAGIC
 # MAGIC Ce notebook expose les variables et fonctions suivantes:
 # MAGIC - `WP_SITES`, `WP_SITES_TO_IMPORT`, `WORDPRESS_CONFIG`
 # MAGIC - `DATABRICKS_CATALOG`, `DATABRICKS_SCHEMA`
+# MAGIC - `BRONZE_TABLES`, `SILVER_TABLE`, `GOLD_TABLE`
+# MAGIC - `BRONZE_SCHEMA`, `SILVER_SCHEMA`, `GOLD_SCHEMA`
 # MAGIC - `clean_html_content()`, `get_nested_value()`, `parse_wp_date()`, `calculate_composite_id()`
 # MAGIC - `WordPressConnector`
 # MAGIC - `create_delta_table()`, `get_last_imported_id()`, `get_last_modified_date()`
+# MAGIC - `upsert_bronze()`, `upsert_silver()`, `upsert_gold_from_silver()`
