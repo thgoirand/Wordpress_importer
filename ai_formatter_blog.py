@@ -53,25 +53,25 @@ AI_PROMPT = (
     "JSON: "
 )
 
-# Prompt pour la classification reglementaire
+# Prompt pour la classification reglementaire (applique sur le texte formate)
 AI_PROMPT_REGULATORY = (
     "Tu es un expert en analyse de contenu. "
-    "Analyse ce JSON WordPress d'un article de blog et determine s'il contient des references "
+    "Analyse ce contenu d'article de blog et determine s'il contient des references "
     "a une reglementation, un texte de loi, une directive, une norme, un decret ou tout cadre juridique/legal. "
     "Exemples : RGPD, DORA, loi de finances, code du travail, directive europeenne, norme ISO, etc. "
     "Reponds UNIQUEMENT par 'true' ou 'false', sans aucune explication. "
-    "JSON: "
+    "Contenu: "
 )
 
-# Prompt pour la classification contexte pays/marche
+# Prompt pour la classification contexte pays/marche (applique sur le texte formate)
 AI_PROMPT_COUNTRY_SPECIFIC = (
     "Tu es un expert en analyse de contenu. "
-    "Analyse ce JSON WordPress d'un article de blog et determine s'il presente un contexte "
+    "Analyse ce contenu d'article de blog et determine s'il presente un contexte "
     "specifique a un pays ou un marche particulier (par exemple : fiscalite francaise, marche espagnol, "
     "legislation italienne, systeme de paie britannique, etc.). "
     "Un contenu generique ou international sans ancrage national doit retourner false. "
     "Reponds UNIQUEMENT par 'true' ou 'false', sans aucune explication. "
-    "JSON: "
+    "Contenu: "
 )
 
 # COMMAND ----------
@@ -176,32 +176,38 @@ def process_batch(source_table: str, batch_ids: list, ai_model: str,
     merge_query = f"""
     MERGE INTO {source_table} AS target
     USING (
+        WITH formatted AS (
+            SELECT
+                id,
+                AI_QUERY(
+                    '{ai_model}',
+                    CONCAT(
+                        '{ai_prompt}',
+                        raw_json
+                    )
+                ) AS new_content_text
+            FROM {source_table}
+            WHERE id IN ({ids_str})
+        )
         SELECT
             id,
-            AI_QUERY(
-                '{ai_model}',
-                CONCAT(
-                    '{ai_prompt}',
-                    raw_json
-                )
-            ) AS new_content_text,
+            new_content_text,
             AI_QUERY(
                 '{ai_model}',
                 CONCAT(
                     '{ai_prompt_regulatory}',
-                    raw_json
+                    new_content_text
                 )
             ) AS new_regulatory_raw,
             AI_QUERY(
                 '{ai_model}',
                 CONCAT(
                     '{ai_prompt_country_specific}',
-                    raw_json
+                    new_content_text
                 )
             ) AS new_country_specific_raw,
             CURRENT_TIMESTAMP() AS new_date_formatted
-        FROM {source_table}
-        WHERE id IN ({ids_str})
+        FROM formatted
     ) AS source
     ON target.id = source.id
     WHEN MATCHED THEN UPDATE SET
