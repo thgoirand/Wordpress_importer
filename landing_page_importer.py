@@ -216,7 +216,7 @@ def run_landing_page_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IM
         # Recupere la derniere date de modification pour import incremental
         modified_after = None
         if incremental:
-            modified_after = get_last_modified_date(catalog, schema, SILVER_TABLE_NAME, site_id, CONTENT_TYPE)
+            modified_after = get_last_modified_date(catalog, schema, BRONZE_TABLE_NAME, site_id, CONTENT_TYPE)
             if modified_after:
                 print(f"Mode incremental - contenus modifies apres: {modified_after}")
 
@@ -240,6 +240,7 @@ def run_landing_page_import_pipeline(sites_to_import: List[str] = WP_SITES_TO_IM
                 "content_type": CONTENT_TYPE,
                 "site_id": site_id,
                 "raw_json": json.dumps(item, ensure_ascii=False),
+                "date_modified": parse_wp_date(item.get('modified')),
                 "date_imported": datetime.now(),
             }
             for item in items

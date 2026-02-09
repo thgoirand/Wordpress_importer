@@ -497,6 +497,7 @@ BRONZE_SCHEMA = StructType([
     StructField("content_type", StringType(), False),
     StructField("site_id", StringType(), False),
     StructField("raw_json", StringType(), True),
+    StructField("date_modified", TimestampType(), True),
     StructField("date_imported", TimestampType(), False),
 ])
 
@@ -626,11 +627,12 @@ def upsert_bronze(df: DataFrame, catalog: str, schema: str, table_name: str):
         WHEN MATCHED THEN
             UPDATE SET
                 raw_json = source.raw_json,
+                date_modified = source.date_modified,
                 date_imported = source.date_imported
         WHEN NOT MATCHED THEN
-            INSERT (id, wp_id, content_type, site_id, raw_json, date_imported)
+            INSERT (id, wp_id, content_type, site_id, raw_json, date_modified, date_imported)
             VALUES (source.id, source.wp_id, source.content_type, source.site_id,
-                    source.raw_json, source.date_imported)
+                    source.raw_json, source.date_modified, source.date_imported)
     """)
     print(f"Upsert bronze termine dans {full_table_name}")
 
