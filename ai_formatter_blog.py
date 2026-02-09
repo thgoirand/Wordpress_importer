@@ -4,10 +4,14 @@
 # MAGIC # Formatage AI des contenus Blog WordPress
 # MAGIC
 # MAGIC Ce notebook formate les contenus blog bruts (raw_json) en markdown structure
-# MAGIC via `AI_QUERY` (Databricks AI Functions).
+# MAGIC et classifie le contenu via `AI_QUERY` (Databricks AI Functions).
 # MAGIC
 # MAGIC **Scope:** Articles de blog (`post`) uniquement.
 # MAGIC Chaque content type dispose de son propre formatter.
+# MAGIC
+# MAGIC **Classification IA :**
+# MAGIC - `has_regulatory_content` : reference a une reglementation ou texte de loi
+# MAGIC - `has_country_specific_context` : contexte specifique a un pays ou marche
 # MAGIC
 # MAGIC **Pourquoi un notebook separe ?**
 # MAGIC Les appels AI_QUERY sur de gros volumes provoquent des timeouts du serverless compute.
@@ -49,10 +53,56 @@ AI_PROMPT = (
     "JSON: "
 )
 
+# Prompt pour la classification reglementaire
+AI_PROMPT_REGULATORY = (
+    "Tu es un expert en analyse de contenu. "
+    "Analyse ce JSON WordPress d'un article de blog et determine s'il contient des references "
+    "a une reglementation, un texte de loi, une directive, une norme, un decret ou tout cadre juridique/legal. "
+    "Exemples : RGPD, DORA, loi de finances, code du travail, directive europeenne, norme ISO, etc. "
+    "Reponds UNIQUEMENT par 'true' ou 'false', sans aucune explication. "
+    "JSON: "
+)
+
+# Prompt pour la classification contexte pays/marche
+AI_PROMPT_COUNTRY_SPECIFIC = (
+    "Tu es un expert en analyse de contenu. "
+    "Analyse ce JSON WordPress d'un article de blog et determine s'il presente un contexte "
+    "specifique a un pays ou un marche particulier (par exemple : fiscalite francaise, marche espagnol, "
+    "legislation italienne, systeme de paie britannique, etc.). "
+    "Un contenu generique ou international sans ancrage national doit retourner false. "
+    "Reponds UNIQUEMENT par 'true' ou 'false', sans aucune explication. "
+    "JSON: "
+)
+
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Identification des elements a traiter
+# MAGIC ## 3. Migration de schema (ajout colonnes de classification)
+
+# COMMAND ----------
+
+def ensure_classification_columns(source_table: str):
+    """
+    Ajoute les colonnes de classification a la table si elles n'existent pas deja.
+    - has_regulatory_content (BOOLEAN) : contient des references reglementaires/legales
+    - has_country_specific_context (BOOLEAN) : contexte specifique a un pays/marche
+    """
+    columns = [col.name for col in spark.table(source_table).schema]
+
+    for col_name in ["has_regulatory_content", "has_country_specific_context"]:
+        if col_name not in columns:
+            spark.sql(f"ALTER TABLE {source_table} ADD COLUMN {col_name} BOOLEAN")
+            print(f"Colonne '{col_name}' ajoutee a la table")
+        else:
+            print(f"Colonne '{col_name}' deja presente")
+
+
+ensure_classification_columns(SOURCE_TABLE)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 4. Identification des elements a traiter
 
 # COMMAND ----------
 
@@ -99,19 +149,26 @@ display(df_to_process)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4. Traitement par batch
+# MAGIC ## 5. Traitement par batch
 
 # COMMAND ----------
 
-def process_batch(source_table: str, batch_ids: list, ai_model: str, ai_prompt: str):
+def process_batch(source_table: str, batch_ids: list, ai_model: str,
+                  ai_prompt: str, ai_prompt_regulatory: str,
+                  ai_prompt_country_specific: str):
     """
     Traite un batch d'elements via AI_QUERY et met a jour la table via MERGE.
+    - Genere le content_text (markdown) via le prompt de formatage
+    - Classifie le contenu reglementaire via le prompt regulatory
+    - Classifie le contexte pays/marche via le prompt country_specific
 
     Args:
         source_table: Nom complet de la table Delta
         batch_ids: Liste des IDs (LongType) a traiter dans ce batch
         ai_model: Nom du modele AI Databricks
         ai_prompt: Prompt de formatage
+        ai_prompt_regulatory: Prompt de classification reglementaire
+        ai_prompt_country_specific: Prompt de classification contexte pays
     """
     # Construit la clause IN avec les IDs du batch
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
@@ -128,6 +185,20 @@ def process_batch(source_table: str, batch_ids: list, ai_model: str, ai_prompt: 
                     raw_json
                 )
             ) AS new_content_text,
+            AI_QUERY(
+                '{ai_model}',
+                CONCAT(
+                    '{ai_prompt_regulatory}',
+                    raw_json
+                )
+            ) AS new_regulatory_raw,
+            AI_QUERY(
+                '{ai_model}',
+                CONCAT(
+                    '{ai_prompt_country_specific}',
+                    raw_json
+                )
+            ) AS new_country_specific_raw,
             CURRENT_TIMESTAMP() AS new_date_formatted
         FROM {source_table}
         WHERE id IN ({ids_str})
@@ -135,6 +206,8 @@ def process_batch(source_table: str, batch_ids: list, ai_model: str, ai_prompt: 
     ON target.id = source.id
     WHEN MATCHED THEN UPDATE SET
         content_text = source.new_content_text,
+        has_regulatory_content = CASE LOWER(TRIM(source.new_regulatory_raw)) WHEN 'true' THEN true ELSE false END,
+        has_country_specific_context = CASE LOWER(TRIM(source.new_country_specific_raw)) WHEN 'true' THEN true ELSE false END,
         date_formatted = source.new_date_formatted
     """
 
@@ -144,15 +217,19 @@ def process_batch(source_table: str, batch_ids: list, ai_model: str, ai_prompt: 
 def run_ai_formatting(source_table: str = SOURCE_TABLE,
                       batch_size: int = BATCH_SIZE,
                       ai_model: str = AI_MODEL,
-                      ai_prompt: str = AI_PROMPT):
+                      ai_prompt: str = AI_PROMPT,
+                      ai_prompt_regulatory: str = AI_PROMPT_REGULATORY,
+                      ai_prompt_country_specific: str = AI_PROMPT_COUNTRY_SPECIFIC):
     """
-    Execute le formatage AI sur tous les elements en attente, par batch.
+    Execute le formatage AI et la classification sur tous les elements en attente, par batch.
 
     Args:
         source_table: Nom complet de la table Delta
         batch_size: Nombre d'elements par batch
         ai_model: Nom du modele AI Databricks
         ai_prompt: Prompt de formatage
+        ai_prompt_regulatory: Prompt de classification reglementaire
+        ai_prompt_country_specific: Prompt de classification contexte pays
 
     Returns:
         Nombre total d'elements traites
@@ -181,7 +258,8 @@ def run_ai_formatting(source_table: str = SOURCE_TABLE,
         print(f"\nBatch {idx}/{nb_batches} ({batch_len} element(s))...")
 
         try:
-            process_batch(source_table, batch_ids, ai_model, ai_prompt)
+            process_batch(source_table, batch_ids, ai_model, ai_prompt,
+                         ai_prompt_regulatory, ai_prompt_country_specific)
             processed += batch_len
             print(f"  OK - {processed}/{total} traite(s)")
         except Exception as e:
@@ -198,7 +276,7 @@ def run_ai_formatting(source_table: str = SOURCE_TABLE,
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 5. Execution
+# MAGIC ## 6. Execution
 
 # COMMAND ----------
 
@@ -211,7 +289,7 @@ total_processed = run_ai_formatting()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 6. Verification
+# MAGIC ## 7. Verification
 
 # COMMAND ----------
 
@@ -221,6 +299,8 @@ display(spark.sql(f"""
         id,
         title,
         LEFT(content_text, 300) AS content_preview,
+        has_regulatory_content,
+        has_country_specific_context,
         date_formatted,
         date_modified
     FROM {SOURCE_TABLE}
@@ -238,7 +318,9 @@ display(spark.sql(f"""
         site_id,
         COUNT(*) AS total,
         COUNT(date_formatted) AS formatted,
-        COUNT(*) - COUNT(date_formatted) AS remaining
+        COUNT(*) - COUNT(date_formatted) AS remaining,
+        SUM(CASE WHEN has_regulatory_content = true THEN 1 ELSE 0 END) AS with_regulatory,
+        SUM(CASE WHEN has_country_specific_context = true THEN 1 ELSE 0 END) AS with_country_specific
     FROM {SOURCE_TABLE}
     WHERE content_type = 'post'
     GROUP BY site_id
