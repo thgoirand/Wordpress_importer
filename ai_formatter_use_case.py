@@ -152,6 +152,10 @@ def process_batch(gold_table: str, batch_ids: list, ai_model: str,
     """
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
 
+    # Echapper les apostrophes pour SQL (' -> '')
+    ai_prompt_content = ai_prompt_content.replace("'", "''")
+    ai_prompt_key_figures = ai_prompt_key_figures.replace("'", "''")
+
     merge_query = f"""
     MERGE INTO {gold_table} AS target
     USING (
