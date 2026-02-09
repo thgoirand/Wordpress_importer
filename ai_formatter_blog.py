@@ -9,9 +9,11 @@
 # MAGIC **Scope:** Articles de blog (`post`) uniquement.
 # MAGIC Chaque content type dispose de son propre formatter.
 # MAGIC
-# MAGIC **Classification IA :**
-# MAGIC - `has_regulatory_content` : reference a une reglementation ou texte de loi
-# MAGIC - `has_country_specific_context` : contexte specifique a un pays ou marche
+# MAGIC **Pipeline AI en 2 etapes (CTE) :**
+# MAGIC 1. Generation du markdown a partir du `raw_json`
+# MAGIC 2. Classification du **markdown genere** (et non du JSON brut) :
+# MAGIC    - `has_regulatory_content` : reference a une reglementation ou texte de loi
+# MAGIC    - `has_country_specific_context` : contexte specifique a un pays ou marche
 # MAGIC
 # MAGIC **Pourquoi un notebook separe ?**
 # MAGIC Les appels AI_QUERY sur de gros volumes provoquent des timeouts du serverless compute.
@@ -53,25 +55,25 @@ AI_PROMPT = (
     "JSON: "
 )
 
-# Prompt pour la classification reglementaire
+# Prompt pour la classification reglementaire (analyse le markdown genere)
 AI_PROMPT_REGULATORY = (
     "Tu es un expert en analyse de contenu. "
-    "Analyse ce JSON WordPress d'un article de blog et determine s'il contient des references "
+    "Analyse ce contenu markdown d'un article de blog et determine s'il contient des references "
     "a une reglementation, un texte de loi, une directive, une norme, un decret ou tout cadre juridique/legal. "
     "Exemples : RGPD, DORA, loi de finances, code du travail, directive europeenne, norme ISO, etc. "
     "Reponds UNIQUEMENT par 'true' ou 'false', sans aucune explication. "
-    "JSON: "
+    "Contenu: "
 )
 
-# Prompt pour la classification contexte pays/marche
+# Prompt pour la classification contexte pays/marche (analyse le markdown genere)
 AI_PROMPT_COUNTRY_SPECIFIC = (
     "Tu es un expert en analyse de contenu. "
-    "Analyse ce JSON WordPress d'un article de blog et determine s'il presente un contexte "
+    "Analyse ce contenu markdown d'un article de blog et determine s'il presente un contexte "
     "specifique a un pays ou un marche particulier (par exemple : fiscalite francaise, marche espagnol, "
     "legislation italienne, systeme de paie britannique, etc.). "
     "Un contenu generique ou international sans ancrage national doit retourner false. "
     "Reponds UNIQUEMENT par 'true' ou 'false', sans aucune explication. "
-    "JSON: "
+    "Contenu: "
 )
 
 # COMMAND ----------
@@ -158,9 +160,12 @@ def process_batch(source_table: str, batch_ids: list, ai_model: str,
                   ai_prompt_country_specific: str):
     """
     Traite un batch d'elements via AI_QUERY et met a jour la table via MERGE.
-    - Genere le content_text (markdown) via le prompt de formatage
-    - Classifie le contenu reglementaire via le prompt regulatory
-    - Classifie le contexte pays/marche via le prompt country_specific
+    Utilise un CTE en 2 etapes :
+    1. Genere le content_text (markdown) a partir du raw_json
+    2. Classifie le markdown genere (regulatory + country_specific)
+
+    Les classifications sont ainsi plus precises car elles analysent du contenu
+    structure plutot que du JSON brut, et consomment moins de tokens.
 
     Args:
         source_table: Nom complet de la table Delta
@@ -173,35 +178,43 @@ def process_batch(source_table: str, batch_ids: list, ai_model: str,
     # Construit la clause IN avec les IDs du batch
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
 
+    # Etape 1 (CTE) : generer le markdown a partir du raw_json
+    # Etape 2 : utiliser le markdown genere pour les classifications regulatory et country_specific
     merge_query = f"""
     MERGE INTO {source_table} AS target
     USING (
+        WITH markdown_generated AS (
+            SELECT
+                id,
+                AI_QUERY(
+                    '{ai_model}',
+                    CONCAT(
+                        '{ai_prompt}',
+                        raw_json
+                    )
+                ) AS new_content_text
+            FROM {source_table}
+            WHERE id IN ({ids_str})
+        )
         SELECT
-            id,
-            AI_QUERY(
-                '{ai_model}',
-                CONCAT(
-                    '{ai_prompt}',
-                    raw_json
-                )
-            ) AS new_content_text,
+            mg.id,
+            mg.new_content_text,
             AI_QUERY(
                 '{ai_model}',
                 CONCAT(
                     '{ai_prompt_regulatory}',
-                    raw_json
+                    mg.new_content_text
                 )
             ) AS new_regulatory_raw,
             AI_QUERY(
                 '{ai_model}',
                 CONCAT(
                     '{ai_prompt_country_specific}',
-                    raw_json
+                    mg.new_content_text
                 )
             ) AS new_country_specific_raw,
             CURRENT_TIMESTAMP() AS new_date_formatted
-        FROM {source_table}
-        WHERE id IN ({ids_str})
+        FROM markdown_generated mg
     ) AS source
     ON target.id = source.id
     WHEN MATCHED THEN UPDATE SET
