@@ -46,14 +46,14 @@ BATCH_SIZE = 5
 # Nombre max d'items a traiter (None = tout traiter, ex: 5 pour les tests)
 MAX_ITEMS = None
 
-# Prompt systeme pour le formatage des landing pages
+# System prompt for landing page formatting
 AI_PROMPT = (
-    "Tu es un expert en formatage de contenu web. "
-    "Convertis ce JSON WordPress d'une landing page en markdown propre et structure. "
-    "Le contenu provient de blocs ACF flexibles (header, grilles, arguments). "
-    "Utilise des titres (##, ###), des listes, et formate correctement les liens. "
-    "Structure le contenu de maniere claire avec les sections d'argumentation bien identifiees. "
-    "Retourne uniquement le markdown, sans explications. "
+    "You are an expert in web content formatting. "
+    "Convert this WordPress JSON of a landing page into clean, well-structured markdown. "
+    "The content comes from ACF flexible blocks (header, grids, arguments). "
+    "Use headings (##, ###), lists, and format links properly. "
+    "Structure the content clearly with well-identified argumentation sections. "
+    "Return only the markdown, without any explanations. "
     "JSON: "
 )
 
@@ -121,7 +121,7 @@ def get_items_to_process(gold_table: str) -> list:
 df_to_process = get_items_to_process(GOLD_TABLE_FULL)
 total_count = df_to_process.count()
 
-print(f"{total_count} landing page(s) a traiter (gold)")
+print(f"{total_count} landing page(s) to process (gold)")
 display(df_to_process)
 
 # COMMAND ----------
@@ -183,34 +183,34 @@ def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
     total = len(all_ids)
 
     if total == 0:
-        print("Aucune landing page a traiter.")
+        print("No landing pages to process.")
         return 0
 
     batches = [all_ids[i:i + batch_size] for i in range(0, total, batch_size)]
     nb_batches = len(batches)
 
-    print(f"Traitement de {total} landing page(s) en {nb_batches} batch(s) de {batch_size} max")
-    print(f"Modele: {ai_model}")
-    print(f"Table gold: {gold_table}")
+    print(f"Processing {total} landing page(s) in {nb_batches} batch(es) of {batch_size} max")
+    print(f"Model: {ai_model}")
+    print(f"Gold table: {gold_table}")
     print(f"{'='*60}")
 
     processed = 0
 
     for idx, batch_ids in enumerate(batches, start=1):
         batch_len = len(batch_ids)
-        print(f"\nBatch {idx}/{nb_batches} ({batch_len} element(s))...")
+        print(f"\nBatch {idx}/{nb_batches} ({batch_len} item(s))...")
 
         try:
             process_batch(gold_table, batch_ids, ai_model, ai_prompt)
             processed += batch_len
-            print(f"  OK - {processed}/{total} traite(s)")
+            print(f"  OK - {processed}/{total} processed")
         except Exception as e:
-            print(f"  ERREUR sur le batch {idx}: {e}")
-            print(f"  IDs concernes: {batch_ids}")
+            print(f"  ERROR on batch {idx}: {e}")
+            print(f"  IDs: {batch_ids}")
             continue
 
     print(f"\n{'='*60}")
-    print(f"Formatage termine: {processed}/{total} landing page(s) traite(s)")
+    print(f"Formatting completed: {processed}/{total} landing page(s) processed")
 
     return processed
 
