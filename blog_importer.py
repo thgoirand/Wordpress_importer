@@ -84,7 +84,7 @@ def transform_content_item(item: Dict, content_type: str, site_id: str, site_con
         # --- SEO ---
         "meta_description": get_nested_value(item, 'yoast_head_json.description'),
         "meta_title": get_nested_value(item, 'yoast_head_json.title'),
-        "meta_keyword": item.get('_yoast_wpseo_focuskw') or get_nested_value(item, 'yoast_head_json.focuskw'),
+        "meta_keyword": None,
         "noindex": noindex,
 
         # --- CONTENU ---

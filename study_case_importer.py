@@ -103,7 +103,7 @@ def transform_study_case_item(item: Dict, site_id: str, site_config: Dict) -> Di
         # --- SEO ---
         "meta_description": get_nested_value(item, 'yoast_head_json.description'),
         "meta_title": get_nested_value(item, 'yoast_head_json.title'),
-        "meta_keyword": item.get('_yoast_wpseo_focuskw') or get_nested_value(item, 'yoast_head_json.focuskw'),
+        "meta_keyword": None,
         "noindex": noindex,
 
         # --- CONTENU ---
