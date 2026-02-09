@@ -134,6 +134,9 @@ CONTENT_SCHEMA = StructType([
     # --- LANGUE ---
     StructField("language", StringType(), True),
 
+    # --- KEY FIGURES (use cases) ---
+    StructField("key_figures", ArrayType(StringType()), True),
+
     # --- DONNEES BRUTES ---
     StructField("raw_json", StringType(), True),
 ])
@@ -218,6 +221,9 @@ def transform_content_item(item: Dict, content_type: str, site_id: str, site_con
 
         # --- LANGUE ---
         "language": language,
+
+        # --- KEY FIGURES ---
+        "key_figures": None,
 
         # --- DONNEES BRUTES ---
         "raw_json": json.dumps(item, ensure_ascii=False),

@@ -1,10 +1,13 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC
-# MAGIC # Formatage AI des contenus WordPress
+# MAGIC # Formatage AI des contenus Blog WordPress
 # MAGIC
-# MAGIC Ce notebook formate les contenus bruts (raw_json) en markdown structure
+# MAGIC Ce notebook formate les contenus blog bruts (raw_json) en markdown structure
 # MAGIC via `AI_QUERY` (Databricks AI Functions).
+# MAGIC
+# MAGIC **Scope:** Articles de blog (`post`) uniquement.
+# MAGIC Chaque content type dispose de son propre formatter.
 # MAGIC
 # MAGIC **Pourquoi un notebook separe ?**
 # MAGIC Les appels AI_QUERY sur de gros volumes provoquent des timeouts du serverless compute.
@@ -55,8 +58,9 @@ AI_PROMPT = (
 
 def get_items_to_process(source_table: str) -> list:
     """
-    Identifie les elements qui necessitent un formatage AI.
+    Identifie les articles de blog qui necessitent un formatage AI.
     Criteres:
+    - content_type = 'post'
     - raw_json non vide
     - content_text vide (nouveau) OU modifie recemment sans re-formatage
     Retourne la liste des IDs a traiter.
@@ -74,6 +78,7 @@ def get_items_to_process(source_table: str) -> list:
     FROM {source_table}
     WHERE
         raw_json IS NOT NULL AND raw_json != ''
+        AND content_type = 'post'
         AND (
             content_text IS NULL
             OR content_text = ''
@@ -88,7 +93,7 @@ def get_items_to_process(source_table: str) -> list:
 df_to_process = get_items_to_process(SOURCE_TABLE)
 total_count = df_to_process.count()
 
-print(f"{total_count} element(s) a traiter")
+print(f"{total_count} article(s) de blog a traiter")
 display(df_to_process)
 
 # COMMAND ----------
@@ -210,7 +215,7 @@ total_processed = run_ai_formatting()
 
 # COMMAND ----------
 
-# Apercu des derniers elements formates
+# Apercu des derniers articles formates
 display(spark.sql(f"""
     SELECT
         id,
@@ -220,21 +225,22 @@ display(spark.sql(f"""
         date_modified
     FROM {SOURCE_TABLE}
     WHERE date_formatted IS NOT NULL
+        AND content_type = 'post'
     ORDER BY date_formatted DESC
     LIMIT 20
 """))
 
 # COMMAND ----------
 
-# Statistiques de formatage
+# Statistiques de formatage des articles
 display(spark.sql(f"""
     SELECT
         site_id,
-        content_type,
         COUNT(*) AS total,
         COUNT(date_formatted) AS formatted,
         COUNT(*) - COUNT(date_formatted) AS remaining
     FROM {SOURCE_TABLE}
-    GROUP BY site_id, content_type
-    ORDER BY site_id, content_type
+    WHERE content_type = 'post'
+    GROUP BY site_id
+    ORDER BY site_id
 """))
