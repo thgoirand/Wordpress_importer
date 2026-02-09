@@ -5,8 +5,8 @@
 # MAGIC
 # MAGIC Ce notebook permet de :
 # MAGIC - Recuperer les articles (posts) via l'API WordPress REST
-# MAGIC - Stocker les donnees brutes dans la table **bronze** `bronze_blog`
-# MAGIC - Transformer et stocker les contenus standardises dans la table **silver** `cegid_website_pages`
+# MAGIC - Stocker les donnees brutes dans la table **SLV** `cegid_website_blog_slv`
+# MAGIC - Transformer et stocker les contenus standardises dans la table **PLT** `cegid_website_plt`
 # MAGIC - Supporter l'incremental via le tracking des dates de modification
 
 # COMMAND ----------
@@ -30,8 +30,8 @@ CONTENT_TYPE = "post"
 CONTENT_ENDPOINT = "/posts"
 
 # Noms de tables (architecture medallion)
-BRONZE_TABLE_NAME = BRONZE_TABLES[CONTENT_TYPE]  # bronze_blog
-SILVER_TABLE_NAME = SILVER_TABLE                   # cegid_website_pages
+BRONZE_TABLE_NAME = BRONZE_TABLES[CONTENT_TYPE]  # cegid_website_blog_slv
+SILVER_TABLE_NAME = SILVER_TABLE                   # cegid_website_plt
 
 # COMMAND ----------
 
@@ -44,7 +44,7 @@ def transform_content_item(item: Dict, content_type: str, site_id: str, site_con
     """
     Transforme un item WordPress en format standardise pour la table silver.
 
-    Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website_pages
+    Schema cible: gdp_cdt_dev_04_gld.sandbox_mkt.cegid_website_plt
     """
     wp_id = item.get('id')
 

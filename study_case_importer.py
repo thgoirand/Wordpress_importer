@@ -5,8 +5,8 @@
 # MAGIC
 # MAGIC Ce notebook permet de :
 # MAGIC - Recuperer les study cases via l'API WordPress REST `/wp-json/wp/v2/study-case`
-# MAGIC - Stocker les donnees brutes dans la table **bronze** `bronze_study_case`
-# MAGIC - Transformer et stocker les contenus standardises dans la table **silver** `cegid_website_pages`
+# MAGIC - Stocker les donnees brutes dans la table **SLV** `cegid_website_study_case_slv`
+# MAGIC - Transformer et stocker les contenus standardises dans la table **PLT** `cegid_website_plt`
 # MAGIC - Supporter l'incremental via le tracking des dates de modification
 
 # COMMAND ----------
@@ -30,8 +30,8 @@ CONTENT_TYPE = "study_case"
 CONTENT_ENDPOINT = "/study-case"
 
 # Noms de tables (architecture medallion)
-BRONZE_TABLE_NAME = BRONZE_TABLES[CONTENT_TYPE]  # bronze_study_case
-SILVER_TABLE_NAME = SILVER_TABLE                   # cegid_website_pages
+BRONZE_TABLE_NAME = BRONZE_TABLES[CONTENT_TYPE]  # cegid_website_study_case_slv
+SILVER_TABLE_NAME = SILVER_TABLE                   # cegid_website_plt
 
 # COMMAND ----------
 
