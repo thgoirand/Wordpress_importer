@@ -14,10 +14,10 @@
 # MAGIC
 # MAGIC **Pipeline AI en 2 passes de classification :**
 # MAGIC 1. Generation du markdown a partir du `raw_json`
-# MAGIC 2. **Pass 1 - Scan leger** : classification sur titre + description uniquement (econome en tokens).
-# MAGIC    Retourne UNCERTAIN si confiance < 80%.
-# MAGIC 3. **Pass 2 - Analyse profonde** : uniquement pour les items UNCERTAIN,
-# MAGIC    analyse du contenu complet avec logique waterfall.
+# MAGIC 2. **Pass 1 - Classification SEO** : classification sur titre + description par intent signals
+# MAGIC    (BOFU > MOFU > TOFU par priorite). Retourne UNCERTAIN uniquement si input vide ou hors-sujet.
+# MAGIC 3. **Pass 2 - Fallback Content Audit** : uniquement pour les items UNCERTAIN,
+# MAGIC    analyse du contenu complet avec methodologie auteur + tie-breaker rule.
 # MAGIC
 # MAGIC **Champs enrichis :**
 # MAGIC - `has_regulatory_content` : reference a une reglementation ou texte de loi
@@ -69,75 +69,83 @@ AI_PROMPT = (
 
 # --- PASS 1 : Classification legere sur titre + description (econome en tokens) ---
 AI_PROMPT_CLASSIFICATION_LIGHT = (
-    "Role: You are an expert in B2B content marketing for Cegid (software vendor).\n\n"
-    "Task: Analyze the following Title and Short Description to categorize the content's marketing intent.\n\n"
-    "Constraint: If the inputs are too vague, generic, or if you lack confidence (>80%) "
-    "regarding any field, you MUST return \"UNCERTAIN\" for that field.\n\n"
-    "Classification Logic for funnel_stage:\n"
-    "- BOFU (Decision & Brand): Mentions \"Cegid\", specific products "
-    "(XRP, Flex, Talentsoft, Loop, Notilus, etc.), \"Price\", \"Demo\", \"Trial\", "
-    "\"Case Study\", or \"Client Success\".\n"
-    "- MOFU (Consideration & Solution): Mentions \"Software\", \"Tool\", \"Platform\", "
-    "\"Comparison\" (vs), \"How to choose\", \"Automation of [process]\", or \"Digitization\".\n"
-    "- TOFU (Awareness & Education): Mentions broad concepts, specific laws/regulations, "
-    "definitions, \"Guide to [Topic]\", \"Trends\", or \"Management tips\" "
-    "without implying a software solution.\n"
-    "- UNCERTAIN: The title is ambiguous (e.g., \"Optimizing Performance\") "
-    "and the description does not clarify if the solution is a software or a methodology.\n\n"
-    "Classification Logic for has_regulatory_content (true/false/UNCERTAIN):\n"
-    "- true: Title or description references a regulation, law, directive, standard, decree, "
-    "or legal framework (GDPR, DORA, finance law, labor code, ISO standard, etc.).\n"
-    "- false: No regulatory reference detected.\n"
-    "- UNCERTAIN: Cannot determine from title and description alone.\n\n"
-    "Classification Logic for has_country_specific_context (true/false/UNCERTAIN):\n"
-    "- true: Title or description references a specific country or national market "
-    "(French taxation, Spanish market, Italian legislation, etc.).\n"
-    "- false: Generic or international content.\n"
-    "- UNCERTAIN: Cannot determine from title and description alone.\n\n"
+    "Role: You are a Lead SEO Specialist for Cegid. "
+    "You categorize content based on user intent signals found in Titles and Meta-Descriptions.\n\n"
+    "Task: Assign the most probable funnel_stage to the provided input. "
+    "Do not be afraid to infer the intent from verbs and context.\n\n"
+    "DECISION GUIDELINES (Priority Order):\n\n"
+    "1. BOFU (Intent: BUY/DECIDE)\n"
+    "   Signals: Brand names (Cegid, XRP, Talentsoft, Loop, Notilus, Flex, etc.), "
+    "\"Price\", \"Demo\", \"Case Study\", \"Success Story\", \"Webinar Product\", \"New Features\".\n"
+    "   Logic: If it talks about the Vendor or the Product directly -> BOFU.\n\n"
+    "2. MOFU (Intent: EVALUATE/ACT)\n"
+    "   Signals: \"Software\", \"Tool\", \"Solution\", \"Comparison\", \"Checklist\", \"Template\".\n"
+    "   Verbs of Action/Change: \"Automate\", \"Digitize\", \"Switch\", \"Choose\", "
+    "\"Implement\", \"Optimize with...\".\n"
+    "   Logic: If the user wants to change a process or find a tool -> MOFU.\n\n"
+    "3. TOFU (Intent: LEARN/UNDERSTAND)\n"
+    "   Signals: \"Definition\", \"Law\", \"Regulation\", \"Trends\", \"Challenges\", "
+    "\"Why...\", \"Understanding...\".\n"
+    "   Verbs of Management: \"Manage\", \"Deal with\", \"Anticipate\", \"Comply\".\n"
+    "   Logic: If the user has a problem but is not looking for a tool yet -> TOFU.\n\n"
+    "IMPORTANT - DEALING WITH AMBIGUITY:\n"
+    "- If a title is generic (e.g., \"Optimizing HR\"), assume the user is in the TOFU (Learning) phase "
+    "unless a software solution is explicitly mentioned.\n"
+    "- ONLY return \"UNCERTAIN\" if the input is empty, meaningless, or completely unrelated "
+    "to business software (e.g., \"Error 404\", \"Home Page\").\n\n"
+    "Also determine:\n"
+    "- has_regulatory_content (true/false/UNCERTAIN): Does the title or description reference "
+    "a regulation, law, directive, standard, decree, or legal framework "
+    "(GDPR, DORA, finance law, labor code, ISO standard, etc.)?\n"
+    "- has_country_specific_context (true/false/UNCERTAIN): Does the title or description reference "
+    "a specific country or national market (French taxation, Spanish market, Italian legislation, etc.)?\n"
+    "  Return UNCERTAIN only if truly impossible to determine from title and description alone.\n\n"
     "Respond ONLY with a valid JSON object (no markdown, no explanation), in this exact format:\n"
-    '{\"has_regulatory_content\": true, \"has_country_specific_context\": false, \"funnel_stage\": \"TOFU\"}\n\n'
+    '{\"funnel_stage\": \"TOFU\", \"has_regulatory_content\": true, \"has_country_specific_context\": false}\n\n'
     "Allowed values:\n"
+    "- funnel_stage: \"TOFU\", \"MOFU\", \"BOFU\", or \"UNCERTAIN\"\n"
     "- has_regulatory_content: true, false, or \"UNCERTAIN\"\n"
-    "- has_country_specific_context: true, false, or \"UNCERTAIN\"\n"
-    "- funnel_stage: \"TOFU\", \"MOFU\", \"BOFU\", or \"UNCERTAIN\"\n\n"
+    "- has_country_specific_context: true, false, or \"UNCERTAIN\"\n\n"
     "Input:\n"
 )
 
-# --- PASS 2 : Classification profonde sur contenu complet (waterfall) ---
+# --- PASS 2 : Classification profonde sur contenu complet (fallback) ---
 AI_PROMPT_CLASSIFICATION_DEEP = (
-    "Role: You are an expert in content analysis. The previous analysis based on the title "
-    "was inconclusive. Now, analyze the FULL BODY CONTENT to make a definitive classification.\n\n"
-    "Decision Hierarchy (Waterfall Logic): Apply these rules in strict order. "
-    "Stop at the first match.\n\n"
-    "1. Check for BOFU (Brand/Product Focused):\n"
-    "   - Does the text explicitly pitch \"Cegid\" or its specific products as the solution?\n"
-    "   - Is it a customer success story, a product update, or a webinar replay about a product?\n"
-    "   -> If YES: classify as BOFU.\n\n"
-    "2. Check for MOFU (Solution Focused):\n"
-    "   - Does the text recommend using \"a software\", \"an ERP\", \"a SIRH\", "
-    "or \"digital tools\" to solve a problem?\n"
-    "   - Is it a comparison, a selection checklist, or a guide on "
-    "\"How to automate/digitize X\"?\n"
-    "   -> If YES: classify as MOFU.\n\n"
-    "3. Check for TOFU (Problem/Education Focused):\n"
-    "   - Is the text purely educational (legal news, definitions, manual management tips, trends)?\n"
-    "   - Does it explain \"Why\" or \"What\" without pushing a software solution immediately?\n"
-    "   -> If YES: classify as TOFU.\n\n"
-    "4. Fallback Rule: If the content remains ambiguous between general advice and software "
-    "promotion, default to TOFU. It is safer to assume the user is still learning "
-    "than to assume they are ready to buy.\n\n"
+    "Role: You are a Content Auditor. Your goal is to definitively classify a blog article "
+    "based on its full content. You cannot answer \"Uncertain\".\n\n"
+    "METHODOLOGY:\n"
+    "Read the content and determine the primary goal of the author.\n\n"
+    "1. Is it a Sales Pitch? (BOFU)\n"
+    "   - Does the article mention \"Cegid\" products more than 3 times?\n"
+    "   - Is the Call-to-Action (CTA) about a Demo or a Quote?\n"
+    "   -> Verdict: BOFU\n\n"
+    "2. Is it a Methodology/Tool Guide? (MOFU)\n"
+    "   - Does the article explain how to solve a problem using technology/digitalization?\n"
+    "   - Does it compare methods (e.g., Excel vs Software)?\n"
+    "   -> Verdict: MOFU\n\n"
+    "3. Is it Educational/News? (TOFU)\n"
+    "   - Does the article explain a new law, a concept, or general HR/Finance advice?\n"
+    "   - Could this article appear on a general news site without promoting Cegid?\n"
+    "   -> Verdict: TOFU\n\n"
+    "THE TIE-BREAKER RULE (Crucial):\n"
+    "If the content gives general advice (TOFU) but mentions a specific Cegid product "
+    "as the solution at the end:\n"
+    "- If the product is mentioned only in the conclusion -> Classify as TOFU "
+    "(It is an educational hook).\n"
+    "- If the product is mentioned throughout the body -> Classify as MOFU "
+    "(It is a product-led article).\n\n"
     "Also determine:\n"
     "- has_regulatory_content (true/false): Does the content reference any regulation, law, "
     "directive, standard, decree, or legal framework?\n"
     "- has_country_specific_context (true/false): Is the content specific to a particular "
     "country or national market?\n\n"
     "Respond ONLY with a valid JSON object (no markdown, no explanation), in this exact format:\n"
-    '{\"has_regulatory_content\": true, \"has_country_specific_context\": false, \"funnel_stage\": \"TOFU\"}\n\n'
-    "Allowed values (no UNCERTAIN allowed in this pass - you MUST decide):\n"
+    '{\"funnel_stage\": \"TOFU\", \"has_regulatory_content\": true, \"has_country_specific_context\": false}\n\n'
+    "Allowed values (no UNCERTAIN allowed - you MUST decide):\n"
+    "- funnel_stage: \"TOFU\", \"MOFU\", or \"BOFU\"\n"
     "- has_regulatory_content: true or false\n"
-    "- has_country_specific_context: true or false\n"
-    "- funnel_stage: \"TOFU\", \"MOFU\", or \"BOFU\"\n\n"
-    "Content:\n"
+    "- has_country_specific_context: true or false\n\n"
+    "Full Content to analyze:\n"
 )
 
 # COMMAND ----------
@@ -387,9 +395,9 @@ def display_uncertain_details(gold_table: str, candidate_ids: list):
 def process_batch_classify_deep(gold_table: str, batch_ids: list, ai_model: str,
                                  ai_prompt_deep: str):
     """
-    Pass 2 : Classification profonde sur le contenu complet (content_text).
+    Pass 2 : Classification par Content Audit sur le contenu complet (content_text).
     Uniquement pour les items dont la pass 1 a retourne UNCERTAIN.
-    Utilise une logique waterfall : BOFU > MOFU > TOFU > fallback TOFU.
+    Methodologie : analyse du but primaire de l'auteur + tie-breaker rule.
     Aucun UNCERTAIN n'est autorise en sortie de cette pass.
     """
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
