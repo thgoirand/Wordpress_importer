@@ -75,20 +75,20 @@ WORDPRESS_CONFIG = {
 DATABRICKS_CATALOG = "gdp_cdt_dev_04_gld"
 DATABRICKS_SCHEMA = "sandbox_mkt"
 
-# --- Architecture Medallion : noms de tables ---
-# Bronze : une table par type de contenu (donnees brutes WordPress)
+# --- Convention de nommage des tables ---
+# SLV (Silver) : une table par type de contenu (donnees brutes WordPress)
 BRONZE_TABLES = {
-    "post": "bronze_blog",
+    "post": "cegid_website_blog_slv",
     "product": "bronze_product",
     "landing_page": "bronze_landing_page",
     "study_case": "bronze_study_case",
 }
 
-# Silver : table unifiee nettoyee et standardisee
-SILVER_TABLE = "cegid_website_pages"
+# PLT (Plateau) : table unifiee avec extraction markdown initiale
+SILVER_TABLE = "cegid_website_plt"
 
-# Gold : table unifiee enrichie par les AI formatters
-GOLD_TABLE = "gold_cegid_website_pages"
+# GLD (Gold) : table finale enrichie par les fonctions IA
+GOLD_TABLE = "cegid_website_gld"
 
 # COMMAND ----------
 
@@ -646,7 +646,7 @@ def upsert_bronze(df: DataFrame, catalog: str, schema: str, table_name: str):
 
 def upsert_silver(df: DataFrame, catalog: str, schema: str, table_name: str):
     """
-    Upsert (MERGE) de contenus standardises dans la table silver cegid_website_pages.
+    Upsert (MERGE) de contenus standardises dans la table PLT cegid_website_plt.
     """
     full_table_name = f"{catalog}.{schema}.{table_name}"
     df.createOrReplaceTempView("new_silver")

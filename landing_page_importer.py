@@ -6,7 +6,7 @@
 # MAGIC Ce notebook permet de :
 # MAGIC - Recuperer les landing pages via l'API WordPress REST `/wp-json/wp/v2/landing-page`
 # MAGIC - Stocker les donnees brutes dans la table **bronze** `bronze_landing_page`
-# MAGIC - Transformer et stocker les contenus standardises dans la table **silver** `cegid_website_pages`
+# MAGIC - Transformer et stocker les contenus standardises dans la table **PLT** `cegid_website_plt`
 # MAGIC - Supporter l'incremental via le tracking des dates de modification
 
 # COMMAND ----------
@@ -31,7 +31,7 @@ CONTENT_ENDPOINT = "/landing-page"
 
 # Noms de tables (architecture medallion)
 BRONZE_TABLE_NAME = BRONZE_TABLES[CONTENT_TYPE]  # bronze_landing_page
-SILVER_TABLE_NAME = SILVER_TABLE                   # cegid_website_pages
+SILVER_TABLE_NAME = SILVER_TABLE                   # cegid_website_plt
 
 # COMMAND ----------
 

@@ -7,8 +7,8 @@
 # MAGIC et en extrait des **key figures** via `AI_QUERY` (Databricks AI Functions).
 # MAGIC
 # MAGIC **Architecture Medallion :**
-# MAGIC - **Source** : table silver `cegid_website_pages` (contenus standardises)
-# MAGIC - **Cible** : table gold `gold_cegid_website_pages` (contenus enrichis par AI)
+# MAGIC - **Source** : table PLT `cegid_website_plt` (contenus standardises)
+# MAGIC - **Cible** : table GLD `cegid_website_gld` (contenus enrichis par IA)
 # MAGIC
 # MAGIC **Scope:** Etudes de cas (`study_case`).
 # MAGIC

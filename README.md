@@ -34,12 +34,14 @@ AI Formatting (Claude Haiku via Databricks AI Functions)
 
 ## Tables cibles
 
-| Table                        | Contenu                                                    |
-|------------------------------|------------------------------------------------------------|
-| `cegid_website_pages`        | Articles, landing pages, produits, études de cas           |
-| `cegid_website_authors`      | Auteurs WordPress avec métadonnées ACF                     |
-| `cegid_website_taxonomy`     | Catégories, tags, taxonomies personnalisées                |
-| `cegid_website_medias`       | Médias (images, documents, etc.)                           |
+| Table                        | Suffixe | Contenu                                                    |
+|------------------------------|---------|-------------------------------------------------------------|
+| `cegid_website_blog_slv`     | SLV     | Données brutes blog (ex-bronze)                             |
+| `cegid_website_plt`          | PLT     | Articles, landing pages, produits, études de cas (extraction markdown) |
+| `cegid_website_gld`          | GLD     | Table finale enrichie par les fonctions IA                  |
+| `cegid_website_authors`      |         | Auteurs WordPress avec métadonnées ACF                      |
+| `cegid_website_taxonomy`     |         | Catégories, tags, taxonomies personnalisées                 |
+| `cegid_website_medias`       |         | Médias (images, documents, etc.)                            |
 
 ## Structure du projet
 
@@ -83,7 +85,7 @@ Les IDs sont composés hiérarchiquement pour garantir l'unicité :
 
 **Endpoint API** : `/wp-json/wp/v2/posts`
 **Type de contenu** : `post`
-**Table cible** : `cegid_website_pages`
+**Table cible** : `cegid_website_plt`
 
 Importe les articles de blog avec :
 - Métadonnées SEO (meta_description, meta_title, noindex) via Yoast
@@ -131,7 +133,7 @@ run_import_pipeline(sites_to_import=list(WP_SITES.keys()))
 
 **Endpoint API** : `/wp-json/wp/v2/landing-page`
 **Type de contenu** : `landing_page`
-**Table cible** : `cegid_website_pages`
+**Table cible** : `cegid_website_plt`
 
 Particularité : le contenu est assemblé à partir des champs flexibles ACF (`vah_flexible_header` et `vah_flexible_main`) plutôt que du `content.rendered` standard. Supporte les blocs de type `builder-grid` (grilles de contenu) et `arguments-content`.
 
@@ -145,7 +147,7 @@ run_import_pipeline(sites_to_import=["fr"], incremental=True)
 
 **Endpoint API** : `/wp-json/wp/v2/product`
 **Type de contenu** : `product`
-**Table cible** : `cegid_website_pages`
+**Table cible** : `cegid_website_plt`
 
 Extrait le contenu produit depuis les blocs flexibles ACF : header, arguments et features. L'image à la une provient de la balise OG image (plus fiable que les données embarquées). Supporte les taxonomies personnalisées (occupation, solution, secteur, product_type).
 
@@ -159,7 +161,7 @@ run_import_pipeline(sites_to_import=["fr"], incremental=True)
 
 **Endpoint API** : `/wp-json/wp/v2/study-case`
 **Type de contenu** : `study_case`
-**Table cible** : `cegid_website_pages`
+**Table cible** : `cegid_website_plt`
 
 Extrait le contenu depuis les blocs `wysiwyg-section` de `vah_flexible_main`. Les blocs structurés (testimonial-cards, product-section) sont ignorés pour l'extraction texte mais conservés dans le JSON brut. Taxonomies personnalisées : occupation, company, solution, secteur, product_type.
 
