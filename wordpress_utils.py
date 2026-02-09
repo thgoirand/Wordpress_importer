@@ -79,9 +79,9 @@ DATABRICKS_SCHEMA = "sandbox_mkt"
 # SLV (Silver) : une table par type de contenu (donnees brutes WordPress)
 BRONZE_TABLES = {
     "post": "cegid_website_blog_slv",
-    "product": "bronze_product",
-    "landing_page": "bronze_landing_page",
-    "study_case": "bronze_study_case",
+    "product": "cegid_website_product_slv",
+    "landing_page": "cegid_website_landing_page_slv",
+    "study_case": "cegid_website_study_case_slv",
 }
 
 # PLT (Plateau) : table unifiee avec extraction markdown initiale

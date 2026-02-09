@@ -5,7 +5,7 @@
 # MAGIC
 # MAGIC Ce notebook permet de :
 # MAGIC - Recuperer les pages produit via l'API WordPress REST `/wp-json/wp/v2/product`
-# MAGIC - Stocker les donnees brutes dans la table **bronze** `bronze_product`
+# MAGIC - Stocker les donnees brutes dans la table **SLV** `cegid_website_product_slv`
 # MAGIC - Transformer et stocker les contenus standardises dans la table **PLT** `cegid_website_plt`
 # MAGIC - Supporter l'import incremental via la date de derniere modification
 
@@ -30,7 +30,7 @@ CONTENT_TYPE = "product"
 CONTENT_ENDPOINT = "/product"
 
 # Noms de tables (architecture medallion)
-BRONZE_TABLE_NAME = BRONZE_TABLES[CONTENT_TYPE]  # bronze_product
+BRONZE_TABLE_NAME = BRONZE_TABLES[CONTENT_TYPE]  # cegid_website_product_slv
 SILVER_TABLE_NAME = SILVER_TABLE                   # cegid_website_plt
 
 # COMMAND ----------

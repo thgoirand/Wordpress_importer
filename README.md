@@ -36,7 +36,10 @@ AI Formatting (Claude Haiku via Databricks AI Functions)
 
 | Table                        | Suffixe | Contenu                                                    |
 |------------------------------|---------|-------------------------------------------------------------|
-| `cegid_website_blog_slv`     | SLV     | Données brutes blog (ex-bronze)                             |
+| `cegid_website_blog_slv`     | SLV     | Données brutes articles de blog                             |
+| `cegid_website_product_slv`  | SLV     | Données brutes produits                                     |
+| `cegid_website_landing_page_slv` | SLV | Données brutes landing pages                                |
+| `cegid_website_study_case_slv` | SLV   | Données brutes études de cas                                |
 | `cegid_website_plt`          | PLT     | Articles, landing pages, produits, études de cas (extraction markdown) |
 | `cegid_website_gld`          | GLD     | Table finale enrichie par les fonctions IA                  |
 | `cegid_website_authors`      |         | Auteurs WordPress avec métadonnées ACF                      |
