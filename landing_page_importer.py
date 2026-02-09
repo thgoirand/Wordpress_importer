@@ -135,7 +135,7 @@ def transform_landing_page_item(item: Dict, site_id: str, site_config: Dict) -> 
         # --- SEO ---
         "meta_description": get_nested_value(item, 'yoast_head_json.description'),
         "meta_title": get_nested_value(item, 'yoast_head_json.title'),
-        "meta_keyword": None,
+        "meta_keyword": None,  # Not available from WordPress API, will be populated from Google Search Console
         "noindex": noindex,
 
         # --- CONTENU ---
