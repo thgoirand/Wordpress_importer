@@ -43,6 +43,9 @@ AI_MODEL = "databricks-claude-haiku-4-5"
 # Taille des batchs
 BATCH_SIZE = 5
 
+# Nombre max d'items a traiter (None = tout traiter, ex: 5 pour les tests)
+MAX_ITEMS = None
+
 # Prompt pour le formatage du contenu markdown
 AI_PROMPT_CONTENT = (
     "Tu es un expert en formatage de contenu web. "
@@ -184,14 +187,20 @@ def process_batch(gold_table: str, batch_ids: list, ai_model: str,
 
 def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
                       batch_size: int = BATCH_SIZE,
+                      max_items: int = MAX_ITEMS,
                       ai_model: str = AI_MODEL,
                       ai_prompt_content: str = AI_PROMPT_CONTENT,
                       ai_prompt_key_figures: str = AI_PROMPT_KEY_FIGURES):
     """
     Execute le formatage AI sur tous les study cases en attente dans la table gold.
+    max_items: nombre max d'items a traiter (None = tout traiter).
     """
     df = get_items_to_process(gold_table)
     all_ids = [row["id"] for row in df.select("id").collect()]
+
+    if max_items is not None:
+        all_ids = all_ids[:max_items]
+
     total = len(all_ids)
 
     if total == 0:
