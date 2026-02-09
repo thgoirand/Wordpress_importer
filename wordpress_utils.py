@@ -427,6 +427,13 @@ def create_delta_table(catalog: str, schema: str, table_name: str,
 
         print(f"Table {full_table_name} creee avec succes")
     else:
+        # Ajoute les colonnes manquantes si le schema a evolue
+        existing_columns = {f.name for f in spark.table(full_table_name).schema.fields}
+        for field in spark_schema.fields:
+            if field.name not in existing_columns:
+                col_type = field.dataType.simpleString()
+                spark.sql(f"ALTER TABLE {full_table_name} ADD COLUMNS ({field.name} {col_type})")
+                print(f"Colonne '{field.name}' ajoutee a {full_table_name}")
         print(f"Table {full_table_name} existe deja")
 
 
