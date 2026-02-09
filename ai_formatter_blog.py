@@ -14,6 +14,7 @@
 # MAGIC 2. Classification du **markdown genere** (et non du JSON brut) :
 # MAGIC    - `has_regulatory_content` : reference a une reglementation ou texte de loi
 # MAGIC    - `has_country_specific_context` : contexte specifique a un pays ou marche
+# MAGIC    - `funnel_stage` : stade du funnel marketing (TOFU / MOFU / BOFU) pour le parcours d'achat de logiciels
 # MAGIC
 # MAGIC **Pourquoi un notebook separe ?**
 # MAGIC Les appels AI_QUERY sur de gros volumes provoquent des timeouts du serverless compute.
@@ -76,6 +77,25 @@ AI_PROMPT_COUNTRY_SPECIFIC = (
     "Contenu: "
 )
 
+# Prompt pour la classification funnel stage (TOFU / MOFU / BOFU)
+AI_PROMPT_FUNNEL_STAGE = (
+    "Tu es un expert en marketing B2B et en strategie de contenu pour l'achat de logiciels en ligne. "
+    "Analyse ce contenu markdown d'un article de blog et determine a quel stade du funnel marketing "
+    "il s'adresse pour un prospect dans un parcours d'achat de logiciel. "
+    "Les 3 stades possibles sont : "
+    "- TOFU (Top of Funnel) : contenu de sensibilisation et decouverte. Le prospect cherche a comprendre "
+    "un sujet, une problematique ou une tendance. Exemples : articles educatifs, guides generaux, "
+    "definitions de concepts, tendances du marche, bonnes pratiques generales. "
+    "- MOFU (Middle of Funnel) : contenu d'evaluation et de consideration. Le prospect a identifie son besoin "
+    "et compare les solutions possibles. Exemples : comparatifs de solutions, guides de choix, "
+    "criteres de selection, cas d'usage detailles, webinars thematiques, livres blancs approfondis. "
+    "- BOFU (Bottom of Funnel) : contenu de decision et de conversion. Le prospect est pret a acheter "
+    "et cherche a valider son choix. Exemples : demos produit, etudes de cas clients avec resultats chiffres, "
+    "temoignages clients, fiches produit detaillees, offres d'essai, ROI et benefices concrets. "
+    "Reponds UNIQUEMENT par 'TOFU', 'MOFU' ou 'BOFU', sans aucune explication. "
+    "Contenu: "
+)
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -88,6 +108,7 @@ def ensure_classification_columns(source_table: str):
     Ajoute les colonnes de classification a la table si elles n'existent pas deja.
     - has_regulatory_content (BOOLEAN) : contient des references reglementaires/legales
     - has_country_specific_context (BOOLEAN) : contexte specifique a un pays/marche
+    - funnel_stage (STRING) : stade du funnel marketing (TOFU, MOFU, BOFU)
     """
     columns = [col.name for col in spark.table(source_table).schema]
 
@@ -97,6 +118,12 @@ def ensure_classification_columns(source_table: str):
             print(f"Colonne '{col_name}' ajoutee a la table")
         else:
             print(f"Colonne '{col_name}' deja presente")
+
+    if "funnel_stage" not in columns:
+        spark.sql(f"ALTER TABLE {source_table} ADD COLUMN funnel_stage STRING")
+        print("Colonne 'funnel_stage' ajoutee a la table")
+    else:
+        print("Colonne 'funnel_stage' deja presente")
 
 
 ensure_classification_columns(SOURCE_TABLE)
@@ -157,12 +184,13 @@ display(df_to_process)
 
 def process_batch(source_table: str, batch_ids: list, ai_model: str,
                   ai_prompt: str, ai_prompt_regulatory: str,
-                  ai_prompt_country_specific: str):
+                  ai_prompt_country_specific: str,
+                  ai_prompt_funnel_stage: str):
     """
     Traite un batch d'elements via AI_QUERY et met a jour la table via MERGE.
     Utilise un CTE en 2 etapes :
     1. Genere le content_text (markdown) a partir du raw_json
-    2. Classifie le markdown genere (regulatory + country_specific)
+    2. Classifie le markdown genere (regulatory + country_specific + funnel_stage)
 
     Les classifications sont ainsi plus precises car elles analysent du contenu
     structure plutot que du JSON brut, et consomment moins de tokens.
@@ -174,12 +202,13 @@ def process_batch(source_table: str, batch_ids: list, ai_model: str,
         ai_prompt: Prompt de formatage
         ai_prompt_regulatory: Prompt de classification reglementaire
         ai_prompt_country_specific: Prompt de classification contexte pays
+        ai_prompt_funnel_stage: Prompt de classification funnel stage (TOFU/MOFU/BOFU)
     """
     # Construit la clause IN avec les IDs du batch
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
 
     # Etape 1 (CTE) : generer le markdown a partir du raw_json
-    # Etape 2 : utiliser le markdown genere pour les classifications regulatory et country_specific
+    # Etape 2 : utiliser le markdown genere pour les classifications
     merge_query = f"""
     MERGE INTO {source_table} AS target
     USING (
@@ -213,6 +242,13 @@ def process_batch(source_table: str, batch_ids: list, ai_model: str,
                     mg.new_content_text
                 )
             ) AS new_country_specific_raw,
+            AI_QUERY(
+                '{ai_model}',
+                CONCAT(
+                    '{ai_prompt_funnel_stage}',
+                    mg.new_content_text
+                )
+            ) AS new_funnel_stage_raw,
             CURRENT_TIMESTAMP() AS new_date_formatted
         FROM markdown_generated mg
     ) AS source
@@ -221,6 +257,7 @@ def process_batch(source_table: str, batch_ids: list, ai_model: str,
         content_text = source.new_content_text,
         has_regulatory_content = CASE LOWER(TRIM(source.new_regulatory_raw)) WHEN 'true' THEN true ELSE false END,
         has_country_specific_context = CASE LOWER(TRIM(source.new_country_specific_raw)) WHEN 'true' THEN true ELSE false END,
+        funnel_stage = CASE UPPER(TRIM(source.new_funnel_stage_raw)) WHEN 'TOFU' THEN 'TOFU' WHEN 'MOFU' THEN 'MOFU' WHEN 'BOFU' THEN 'BOFU' ELSE NULL END,
         date_formatted = source.new_date_formatted
     """
 
@@ -232,7 +269,8 @@ def run_ai_formatting(source_table: str = SOURCE_TABLE,
                       ai_model: str = AI_MODEL,
                       ai_prompt: str = AI_PROMPT,
                       ai_prompt_regulatory: str = AI_PROMPT_REGULATORY,
-                      ai_prompt_country_specific: str = AI_PROMPT_COUNTRY_SPECIFIC):
+                      ai_prompt_country_specific: str = AI_PROMPT_COUNTRY_SPECIFIC,
+                      ai_prompt_funnel_stage: str = AI_PROMPT_FUNNEL_STAGE):
     """
     Execute le formatage AI et la classification sur tous les elements en attente, par batch.
 
@@ -243,6 +281,7 @@ def run_ai_formatting(source_table: str = SOURCE_TABLE,
         ai_prompt: Prompt de formatage
         ai_prompt_regulatory: Prompt de classification reglementaire
         ai_prompt_country_specific: Prompt de classification contexte pays
+        ai_prompt_funnel_stage: Prompt de classification funnel stage (TOFU/MOFU/BOFU)
 
     Returns:
         Nombre total d'elements traites
@@ -272,7 +311,8 @@ def run_ai_formatting(source_table: str = SOURCE_TABLE,
 
         try:
             process_batch(source_table, batch_ids, ai_model, ai_prompt,
-                         ai_prompt_regulatory, ai_prompt_country_specific)
+                         ai_prompt_regulatory, ai_prompt_country_specific,
+                         ai_prompt_funnel_stage)
             processed += batch_len
             print(f"  OK - {processed}/{total} traite(s)")
         except Exception as e:
@@ -314,6 +354,7 @@ display(spark.sql(f"""
         LEFT(content_text, 300) AS content_preview,
         has_regulatory_content,
         has_country_specific_context,
+        funnel_stage,
         date_formatted,
         date_modified
     FROM {SOURCE_TABLE}
@@ -333,7 +374,10 @@ display(spark.sql(f"""
         COUNT(date_formatted) AS formatted,
         COUNT(*) - COUNT(date_formatted) AS remaining,
         SUM(CASE WHEN has_regulatory_content = true THEN 1 ELSE 0 END) AS with_regulatory,
-        SUM(CASE WHEN has_country_specific_context = true THEN 1 ELSE 0 END) AS with_country_specific
+        SUM(CASE WHEN has_country_specific_context = true THEN 1 ELSE 0 END) AS with_country_specific,
+        SUM(CASE WHEN funnel_stage = 'TOFU' THEN 1 ELSE 0 END) AS funnel_tofu,
+        SUM(CASE WHEN funnel_stage = 'MOFU' THEN 1 ELSE 0 END) AS funnel_mofu,
+        SUM(CASE WHEN funnel_stage = 'BOFU' THEN 1 ELSE 0 END) AS funnel_bofu
     FROM {SOURCE_TABLE}
     WHERE content_type = 'post'
     GROUP BY site_id
