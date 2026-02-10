@@ -194,6 +194,26 @@ display(df_to_process)
 
 # COMMAND ----------
 
+def clean_ai_json(raw_response: str) -> str:
+    """
+    Nettoie la reponse AI qui peut contenir des fences markdown (```json ... ```)
+    ou des espaces/retours en debut/fin.
+    Extrait le JSON valide entre les premieres accolades { }.
+    """
+    if raw_response is None:
+        return None
+    text = raw_response.strip()
+    # Supprime les fences markdown (```json ... ``` ou ``` ... ```)
+    if text.startswith("```"):
+        first_newline = text.find("\n")
+        if first_newline != -1:
+            text = text[first_newline + 1:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    return text
+
+
 def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
                           ai_prompt: str):
     """
@@ -204,9 +224,15 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
     - classification.has_country_specific_context (true/false)
     - markdown_content (contenu formate en markdown)
     Met a jour tous les champs enrichis dans la table gold.
+
+    Strategie de parsing : on utilise clean_ai_json (UDF) pour nettoyer les
+    eventuelles fences markdown avant GET_JSON_OBJECT.
     """
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
     ai_prompt_sql = ai_prompt.replace("'", "''")
+
+    # Enregistre le UDF pour nettoyage des reponses AI
+    spark.udf.register("clean_ai_json", clean_ai_json)
 
     merge_query = f"""
     MERGE INTO {gold_table} AS target
@@ -214,9 +240,11 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
         WITH ai_result AS (
             SELECT
                 id,
-                AI_QUERY(
-                    '{ai_model}',
-                    CONCAT('{ai_prompt_sql}', raw_json)
+                clean_ai_json(
+                    AI_QUERY(
+                        '{ai_model}',
+                        CONCAT('{ai_prompt_sql}', raw_json)
+                    )
                 ) AS ai_json
             FROM {gold_table}
             WHERE id IN ({ids_str})
@@ -313,7 +341,84 @@ total_processed = run_ai_formatting()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 7. Verification
+# MAGIC ## 7. Diagnostic - Analyse des reponses AI
+# MAGIC
+# MAGIC Ce bloc permet de verifier que le parsing JSON fonctionne correctement.
+# MAGIC Il affiche les items recemment traites et identifie ceux ou le parsing a echoue
+# MAGIC (content_text NULL malgre un date_formatted renseigne).
+
+# COMMAND ----------
+
+# Diagnostic : items traites recemment avec detail du parsing
+df_diag = spark.sql(f"""
+    SELECT
+        id,
+        title,
+        CASE WHEN content_text IS NULL OR content_text = '' THEN 'EMPTY' ELSE 'OK' END AS markdown_status,
+        CASE WHEN funnel_stage IS NULL THEN 'NULL' ELSE funnel_stage END AS funnel_status,
+        has_regulatory_content,
+        has_country_specific_context,
+        LENGTH(content_text) AS content_length,
+        date_formatted
+    FROM {GOLD_TABLE_FULL}
+    WHERE date_formatted IS NOT NULL
+        AND content_type = '{CONTENT_TYPE}'
+    ORDER BY date_formatted DESC
+    LIMIT 20
+""")
+
+# Compte les items avec parsing echoue
+total_diag = df_diag.count()
+failed_markdown = df_diag.filter("markdown_status = 'EMPTY'").count()
+failed_funnel = df_diag.filter("funnel_status = 'NULL'").count()
+
+print(f"Diagnostic sur les {total_diag} derniers items traites :")
+print(f"  - Markdown vide : {failed_markdown}/{total_diag}")
+print(f"  - Funnel NULL   : {failed_funnel}/{total_diag}")
+if failed_markdown > 0:
+    print(f"  ATTENTION : {failed_markdown} item(s) avec content_text vide apres traitement AI.")
+    print(f"  Cause probable : la reponse AI contient des fences markdown ou un format JSON inattendu.")
+display(df_diag)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Debug approfondi (reponse AI brute)
+# MAGIC
+# MAGIC Decommenter et executer ce bloc pour voir la reponse brute de AI_QUERY
+# MAGIC sur un item specifique. Utile pour diagnostiquer les problemes de parsing.
+
+# COMMAND ----------
+
+# # --- DECOMMENTER POUR DEBUG ---
+# # Remplacer <ID> par l'id d'un item problematique
+# debug_id = "<ID>"
+# ai_prompt_sql = AI_PROMPT_UNIFIED.replace("'", "''")
+# spark.udf.register("clean_ai_json", clean_ai_json)
+#
+# df_debug = spark.sql(f"""
+#     SELECT
+#         id,
+#         title,
+#         AI_QUERY(
+#             '{AI_MODEL}',
+#             CONCAT('{ai_prompt_sql}', raw_json)
+#         ) AS raw_ai_response,
+#         clean_ai_json(
+#             AI_QUERY(
+#                 '{AI_MODEL}',
+#                 CONCAT('{ai_prompt_sql}', raw_json)
+#             )
+#         ) AS cleaned_ai_response
+#     FROM {GOLD_TABLE_FULL}
+#     WHERE id = {debug_id}
+# """)
+# display(df_debug)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 8. Verification
 
 # COMMAND ----------
 
@@ -338,6 +443,7 @@ display(spark.sql(f"""
 # COMMAND ----------
 
 # Statistiques de formatage et classification des articles (gold)
+# Note: funnel_uncertain inclut les items pas encore traites (funnel_stage IS NULL)
 display(spark.sql(f"""
     SELECT
         site_id,
