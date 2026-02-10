@@ -268,8 +268,8 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
         for row in df_debug.collect():
             raw = str(row["ai_raw_response"])
             print(f"      ID={row['id']} | title={row['title']}")
-            print(f"      ai_raw_response (first 500 chars): {raw[:500]}")
-            print(f"      ai_json_cleaned (first 500 chars): {str(row['ai_json_cleaned'])[:500]}")
+            print(f"      ai_raw_response: {raw}")
+            print(f"      ai_json_cleaned: {str(row['ai_json_cleaned'])}")
             print(f"      parsed_markdown_content: {'OK (non-empty)' if row['parsed_markdown_content'] else 'NULL/EMPTY'}")
             print(f"      parsed_funnel_stage: {row['parsed_funnel_stage']}")
             print()
@@ -446,7 +446,7 @@ df_ghost = spark.sql(f"""
         site_id,
         date_formatted,
         date_modified,
-        LEFT(raw_json, 200) AS raw_json_preview,
+        raw_json AS raw_json_preview,
         content_text IS NULL AS is_null,
         CASE WHEN content_text = '' THEN true ELSE false END AS is_empty
     FROM {GOLD_TABLE_FULL}
@@ -531,13 +531,13 @@ if sample_id:
     for row in df_test.collect():
         raw = str(row["ai_raw_response"])
         print(f"\n--- Reponse brute AI_QUERY (ID={row['id']}, title={row['title']}) ---")
-        print(raw[:2000])
+        print(raw)
         # Nettoyage des markdown fences avant parsing
         import re
         cleaned = re.sub(r'^\s*```[a-z]*\s*', '', raw)
         cleaned = re.sub(r'\s*```\s*$', '', cleaned)
         print(f"\n--- Reponse nettoyee (fences supprimees) ---")
-        print(cleaned[:500])
+        print(cleaned)
         print(f"\n--- Tentative de parsing GET_JSON_OBJECT ---")
         cleaned_escaped = cleaned.replace("'", "''")
         df_parse = spark.sql(f"""
