@@ -107,13 +107,26 @@ AI_PROMPT_UNIFIED = (
     "- Remove WordPress shortcodes or inline styles.\n\n"
 
     "--- OUTPUT FORMAT ---\n"
-    "Return ONLY a single valid JSON object with the following structure.\n"
-    "CRITICAL: Do NOT wrap the output in markdown code fences (no ```json, no ```).\n"
-    "Do NOT add any text before or after the JSON object.\n"
-    "Output the raw JSON directly, starting with { and ending with }.\n"
-    '{"classification": {"funnel_stage": "TOFU", "has_regulatory_content": true, '
-    '"has_country_specific_context": false}, '
-    '"markdown_content": "# Title\\n\\n## Subheading\\n\\nContent here..."}\n\n'
+    "Return ONLY a valid JSON object. Your entire response must start with the "
+    "opening { and end with the closing }.\n"
+    "NEVER wrap the JSON in ```json or ``` markdown fences.\n"
+    "NEVER add any text, comment or explanation before or after the JSON.\n\n"
+
+    "JSON structure:\n"
+    "{\n"
+    '  "classification": {\n'
+    '    "funnel_stage": "TOFU",\n'
+    '    "has_regulatory_content": true,\n'
+    '    "has_country_specific_context": false\n'
+    "  },\n"
+    '  "markdown_content": "# Title\\n\\nContent here..."\n'
+    "}\n\n"
+
+    "Rules for markdown_content:\n"
+    "- It must be a valid JSON string on a single line.\n"
+    "- Encode newlines as the two-character sequence backslash-n.\n"
+    "- Escape any double quotes inside the text with a backslash.\n"
+    "- Ensure the JSON is complete and properly closed.\n\n"
 
     "Input JSON:\n"
 )
