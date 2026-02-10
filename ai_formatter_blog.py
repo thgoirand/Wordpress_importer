@@ -107,8 +107,11 @@ AI_PROMPT_UNIFIED = (
     "- Remove WordPress shortcodes or inline styles.\n\n"
 
     "--- OUTPUT FORMAT ---\n"
-    "Return ONLY a single valid JSON object with the following structure "
-    "(no markdown fences, no explanations):\n"
+    "CRITICAL: Your entire response must be a single raw JSON object. "
+    "Do NOT wrap it in ```json``` or any markdown code fences. "
+    "Do NOT add any text before or after the JSON. "
+    "Start your response directly with the opening brace { and end with the closing brace }.\n"
+    "Expected structure:\n"
     '{"classification": {"funnel_stage": "TOFU", "has_regulatory_content": true, '
     '"has_country_specific_context": false}, '
     '"markdown_content": "# Title\\n\\n## Subheading\\n\\nContent here..."}\n\n'
@@ -253,14 +256,14 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
         WITH ai_result AS (
             SELECT
                 id,
-                -- Nettoyer les markdown fences (```json ... ```) que le modele peut ajouter
-                REGEXP_REPLACE(
+                -- Filet de securite : retirer les markdown fences si le modele en ajoute malgre le prompt
+                TRIM(REGEXP_REPLACE(
                     AI_QUERY(
                         '{ai_model}',
                         CONCAT('{ai_prompt_sql}', raw_json)
                     ),
-                    '^\\s*```(?:json)?\\s*|\\s*```\\s*$', ''
-                ) AS ai_json
+                    '^\\s*```[a-z]*\\s*|\\s*```\\s*$', ''
+                )) AS ai_json
             FROM {gold_table}
             WHERE id IN ({ids_str})
         )
