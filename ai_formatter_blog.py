@@ -434,18 +434,34 @@ display(spark.sql(f"""
 
 # COMMAND ----------
 
-# Diagnostic 4 : Test AI_QUERY sur un item specifique (decommenter pour tester)
-# Permet de verifier que le retour JSON est valide
-# sample_id = df_ghost.first()["id"] if df_ghost.count() > 0 else None
-# if sample_id:
-#     print(f"Test AI_QUERY pour l'item ID={sample_id}")
-#     display(spark.sql(f"""
-#         SELECT
-#             id,
-#             AI_QUERY(
-#                 '{AI_MODEL}',
-#                 CONCAT('{AI_PROMPT_UNIFIED.replace("'", "''")}', raw_json)
-#             ) AS ai_raw_response
-#         FROM {GOLD_TABLE_FULL}
-#         WHERE id = {sample_id}
-#     """))
+# Diagnostic 4 : Test AI_QUERY brut sur un item + extraction JSON
+# Montre exactement ce que AI_QUERY retourne et ce que GET_JSON_OBJECT en extrait
+print("=== Test AI_QUERY brut sur un item ===")
+display(spark.sql(f"""
+    WITH sample AS (
+        SELECT id, raw_json
+        FROM {GOLD_TABLE_FULL}
+        WHERE content_type = '{CONTENT_TYPE}'
+            AND raw_json IS NOT NULL AND raw_json != ''
+        ORDER BY date_modified DESC
+        LIMIT 1
+    ),
+    ai_result AS (
+        SELECT
+            s.id,
+            AI_QUERY(
+                '{AI_MODEL}',
+                CONCAT('{AI_PROMPT_UNIFIED.replace("'", "''")}', s.raw_json)
+            ) AS ai_raw_response
+        FROM sample s
+    )
+    SELECT
+        ar.id,
+        ar.ai_raw_response,
+        LEFT(ar.ai_raw_response, 500) AS response_preview,
+        LENGTH(ar.ai_raw_response) AS response_length,
+        GET_JSON_OBJECT(ar.ai_raw_response, '$.markdown_content') AS extracted_content,
+        GET_JSON_OBJECT(ar.ai_raw_response, '$.classification.funnel_stage') AS extracted_funnel,
+        GET_JSON_OBJECT(ar.ai_raw_response, '$.classification.has_regulatory_content') AS extracted_regulatory
+    FROM ai_result ar
+"""))
