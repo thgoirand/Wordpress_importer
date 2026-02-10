@@ -195,7 +195,7 @@ display(df_to_process)
 # COMMAND ----------
 
 def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
-                          ai_prompt: str):
+                          ai_prompt: str, debug: bool = False):
     """
     Traitement unifie : classification + generation markdown en un seul appel AI.
     Le prompt demande au modele de retourner un JSON contenant :
@@ -204,9 +204,48 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
     - classification.has_country_specific_context (true/false)
     - markdown_content (contenu formate en markdown)
     Met a jour tous les champs enrichis dans la table gold.
+
+    Si debug=True, affiche la reponse brute de AI_QUERY avant le MERGE
+    pour diagnostiquer les problemes de parsing JSON.
     """
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
     ai_prompt_sql = ai_prompt.replace("'", "''")
+
+    # --- Mode debug : afficher la reponse brute AI_QUERY ---
+    if debug:
+        debug_query = f"""
+        SELECT
+            id,
+            title,
+            AI_QUERY(
+                '{ai_model}',
+                CONCAT('{ai_prompt_sql}', raw_json)
+            ) AS ai_raw_response,
+            GET_JSON_OBJECT(
+                AI_QUERY(
+                    '{ai_model}',
+                    CONCAT('{ai_prompt_sql}', raw_json)
+                ), '$.markdown_content'
+            ) AS parsed_markdown_content,
+            GET_JSON_OBJECT(
+                AI_QUERY(
+                    '{ai_model}',
+                    CONCAT('{ai_prompt_sql}', raw_json)
+                ), '$.classification.funnel_stage'
+            ) AS parsed_funnel_stage
+        FROM {gold_table}
+        WHERE id IN ({ids_str})
+        """
+        print("    [DEBUG] Raw AI_QUERY response:")
+        df_debug = spark.sql(debug_query)
+        for row in df_debug.collect():
+            raw = row["ai_raw_response"]
+            print(f"      ID={row['id']} | title={row['title']}")
+            print(f"      ai_raw_response (first 500 chars): {str(raw)[:500]}")
+            print(f"      parsed_markdown_content: {'OK (non-empty)' if row['parsed_markdown_content'] else 'NULL/EMPTY'}")
+            print(f"      parsed_funnel_stage: {row['parsed_funnel_stage']}")
+            print()
+        return  # En mode debug, on ne fait pas le MERGE
 
     merge_query = f"""
     MERGE INTO {gold_table} AS target
@@ -252,13 +291,15 @@ def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
                       batch_size: int = BATCH_SIZE,
                       max_items: int = MAX_ITEMS,
                       ai_model: str = AI_MODEL,
-                      ai_prompt: str = AI_PROMPT_UNIFIED):
+                      ai_prompt: str = AI_PROMPT_UNIFIED,
+                      debug: bool = False):
     """
     Execute le pipeline AI unifie en une seule passe :
     - Classification (funnel_stage, regulatory, country) + generation markdown
       en un seul appel AI par item.
 
     max_items: nombre max d'items a traiter (None = tout traiter).
+    debug: si True, affiche la reponse brute AI_QUERY sans effectuer le MERGE.
     """
     df = get_items_to_process(gold_table)
     all_ids = [row["id"] for row in df.select("id").collect()]
@@ -278,6 +319,8 @@ def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
     print(f"Processing {total} item(s) in {nb_batches} batch(es) of {batch_size} max")
     print(f"Model: {ai_model}")
     print(f"Gold table: {gold_table}")
+    if debug:
+        print(f"*** DEBUG MODE: responses will be displayed, NO data will be written ***")
     print(f"{'='*60}")
 
     # --- Single pass: Markdown + Classification ---
@@ -287,7 +330,8 @@ def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
         batch_len = len(batch_ids)
         print(f"  Batch {idx}/{nb_batches} ({batch_len} item(s))...")
         try:
-            process_batch_unified(gold_table, batch_ids, ai_model, ai_prompt)
+            process_batch_unified(gold_table, batch_ids, ai_model, ai_prompt,
+                                  debug=debug)
             processed += batch_len
             print(f"    OK - {processed}/{total} processed")
         except Exception as e:
@@ -434,18 +478,41 @@ display(spark.sql(f"""
 
 # COMMAND ----------
 
-# Diagnostic 4 : Test AI_QUERY sur un item specifique (decommenter pour tester)
-# Permet de verifier que le retour JSON est valide
-# sample_id = df_ghost.first()["id"] if df_ghost.count() > 0 else None
-# if sample_id:
-#     print(f"Test AI_QUERY pour l'item ID={sample_id}")
-#     display(spark.sql(f"""
-#         SELECT
-#             id,
-#             AI_QUERY(
-#                 '{AI_MODEL}',
-#                 CONCAT('{AI_PROMPT_UNIFIED.replace("'", "''")}', raw_json)
-#             ) AS ai_raw_response
-#         FROM {GOLD_TABLE_FULL}
-#         WHERE id = {sample_id}
-#     """))
+# Diagnostic 4 : Test AI_QUERY sur un item specifique
+# Affiche la reponse brute + le resultat du parsing JSON
+sample_id = df_ghost.first()["id"] if df_ghost.count() > 0 else None
+if sample_id is None:
+    # Pas d'items fantomes, on prend un item quelconque a traiter
+    df_any = get_items_to_process(GOLD_TABLE_FULL)
+    if df_any.count() > 0:
+        sample_id = df_any.first()["id"]
+
+if sample_id:
+    print(f"Test AI_QUERY pour l'item ID={sample_id}")
+    ai_prompt_escaped = AI_PROMPT_UNIFIED.replace("'", "''")
+    df_test = spark.sql(f"""
+        SELECT
+            id,
+            title,
+            AI_QUERY(
+                '{AI_MODEL}',
+                CONCAT('{ai_prompt_escaped}', raw_json)
+            ) AS ai_raw_response
+        FROM {GOLD_TABLE_FULL}
+        WHERE id = {sample_id}
+    """)
+    for row in df_test.collect():
+        raw = str(row["ai_raw_response"])
+        print(f"\n--- Reponse brute AI_QUERY (ID={row['id']}, title={row['title']}) ---")
+        print(raw[:2000])
+        print(f"\n--- Tentative de parsing GET_JSON_OBJECT ---")
+        # Test parsing sur la reponse
+        df_parse = spark.sql(f"""
+            SELECT
+                GET_JSON_OBJECT('{raw.replace("'", "''")}', '$.markdown_content') AS markdown_content,
+                GET_JSON_OBJECT('{raw.replace("'", "''")}', '$.classification.funnel_stage') AS funnel_stage,
+                GET_JSON_OBJECT('{raw.replace("'", "''")}', '$.classification.has_regulatory_content') AS has_regulatory
+        """)
+        display(df_parse)
+else:
+    print("Aucun item disponible pour le test AI_QUERY.")
