@@ -253,9 +253,13 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
         WITH ai_result AS (
             SELECT
                 id,
-                AI_QUERY(
-                    '{ai_model}',
-                    CONCAT('{ai_prompt_sql}', raw_json)
+                -- Nettoyer les markdown fences (```json ... ```) que le modele peut ajouter
+                REGEXP_REPLACE(
+                    AI_QUERY(
+                        '{ai_model}',
+                        CONCAT('{ai_prompt_sql}', raw_json)
+                    ),
+                    '^\\s*```(?:json)?\\s*|\\s*```\\s*$', ''
                 ) AS ai_json
             FROM {gold_table}
             WHERE id IN ({ids_str})
