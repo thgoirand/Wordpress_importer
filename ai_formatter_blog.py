@@ -59,6 +59,11 @@ BATCH_SIZE = 5
 MAX_ITEMS = None
 
 # --- Prompt unifie : markdown + classification en un seul appel AI ---
+# Format a separateurs : classification JSON (petit, en premier) + markdown (texte libre apres).
+# Avantages :
+# - La classification est toujours en debut de reponse → jamais tronquee
+# - Le markdown est en texte libre → pas de probleme d'echappement JSON
+# - Meme si la reponse est tronquee, le contenu partiel reste exploitable
 AI_PROMPT_UNIFIED = (
     "Role: You are an expert in B2B content marketing for Cegid (software vendor) "
     "and a web formatting specialist.\n\n"
@@ -106,27 +111,17 @@ AI_PROMPT_UNIFIED = (
     "- Use proper headings (##, ###), bullet points, and format links [text](url).\n"
     "- Remove WordPress shortcodes or inline styles.\n\n"
 
-    "--- OUTPUT FORMAT ---\n"
-    "Return ONLY a valid JSON object. Your entire response must start with the "
-    "opening { and end with the closing }.\n"
-    "NEVER wrap the JSON in ```json or ``` markdown fences.\n"
-    "NEVER add any text, comment or explanation before or after the JSON.\n\n"
+    "--- OUTPUT FORMAT (MANDATORY) ---\n"
+    "You MUST output EXACTLY in this format with the two separator lines shown below.\n"
+    "NEVER wrap the output in ```json or ``` markdown fences.\n"
+    "NEVER add any text or explanation outside this structure.\n\n"
 
-    "JSON structure:\n"
-    "{\n"
-    '  "classification": {\n'
-    '    "funnel_stage": "TOFU",\n'
-    '    "has_regulatory_content": true,\n'
-    '    "has_country_specific_context": false\n'
-    "  },\n"
-    '  "markdown_content": "# Title\\n\\nContent here..."\n'
-    "}\n\n"
-
-    "Rules for markdown_content:\n"
-    "- It must be a valid JSON string on a single line.\n"
-    "- Encode newlines as the two-character sequence backslash-n.\n"
-    "- Escape any double quotes inside the text with a backslash.\n"
-    "- Ensure the JSON is complete and properly closed.\n\n"
+    "---CLASSIFICATION---\n"
+    '{"funnel_stage": "TOFU", "has_regulatory_content": true, "has_country_specific_context": false}\n'
+    "---CONTENT---\n"
+    "# Title\n\n"
+    "## Subheading\n\n"
+    "Content here...\n\n"
 
     "Input JSON:\n"
 )
@@ -213,88 +208,106 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
                           ai_prompt: str, debug: bool = False):
     """
     Traitement unifie : classification + generation markdown en un seul appel AI.
-    Le prompt demande au modele de retourner un JSON contenant :
-    - classification.funnel_stage (TOFU/MOFU/BOFU)
-    - classification.has_regulatory_content (true/false)
-    - classification.has_country_specific_context (true/false)
-    - markdown_content (contenu formate en markdown)
-    Met a jour tous les champs enrichis dans la table gold.
+    Le prompt retourne un format a separateurs :
 
-    Note: la reponse AI est nettoyee des markdown fences (```json...```)
-    avant le parsing JSON, car certains modeles les ajoutent malgre les instructions.
+    ---CLASSIFICATION---
+    {"funnel_stage": "...", "has_regulatory_content": ..., "has_country_specific_context": ...}
+    ---CONTENT---
+    # Contenu markdown...
 
-    Si debug=True, affiche la reponse brute de AI_QUERY avant le MERGE
-    pour diagnostiquer les problemes de parsing JSON.
+    Parsing :
+    - Classification extraite entre les deux separateurs → petit JSON, parse avec GET_JSON_OBJECT
+    - Markdown extrait apres ---CONTENT--- → texte libre, pas de parsing JSON
+    - La classification est toujours en debut de reponse donc jamais tronquee
+    - Meme si le markdown est tronque, le contenu partiel reste exploitable
+
+    Si debug=True, affiche la reponse brute de AI_QUERY avant le MERGE.
     """
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
     ai_prompt_sql = ai_prompt.replace("'", "''")
 
-    # Expression SQL pour nettoyer les markdown fences de la reponse AI
-    # Supprime ```json au debut et ``` a la fin si presents
-    def clean_json_expr(col_name):
-        return f"TRIM(REGEXP_REPLACE(REGEXP_REPLACE({col_name}, '^\\\\s*```[a-z]*\\\\s*', ''), '\\\\s*```\\\\s*$', ''))"
-
-    clean_ai_json = clean_json_expr("ai_raw_response")
+    # Expressions SQL pour extraire classification et markdown depuis la reponse
+    # La classification JSON est entre ---CLASSIFICATION--- et ---CONTENT---
+    # Le markdown est tout ce qui suit ---CONTENT---
+    # REGEXP_REPLACE nettoie d'eventuelles fences markdown autour du JSON classification
+    classif_raw = """TRIM(SUBSTRING(
+            ai_response,
+            LOCATE('---CLASSIFICATION---', ai_response) + 20,
+            LOCATE('---CONTENT---', ai_response) - LOCATE('---CLASSIFICATION---', ai_response) - 20
+        ))"""
+    classif_expr = f"REGEXP_REPLACE(REGEXP_REPLACE({classif_raw}, '^\\\\s*```[a-z]*\\\\s*', ''), '\\\\s*```\\\\s*$', '')"
+    markdown_expr = """TRIM(SUBSTRING(
+            ai_response,
+            LOCATE('---CONTENT---', ai_response) + 14
+        ))"""
 
     # --- Mode debug : afficher la reponse brute AI_QUERY ---
     if debug:
         debug_query = f"""
-        WITH ai_result AS (
+        WITH ai_raw AS (
             SELECT
                 id,
                 title,
                 AI_QUERY(
                     '{ai_model}',
                     CONCAT('{ai_prompt_sql}', raw_json)
-                ) AS ai_raw_response
+                ) AS ai_response
             FROM {gold_table}
             WHERE id IN ({ids_str})
         )
         SELECT
             id,
             title,
-            ai_raw_response,
-            {clean_ai_json} AS ai_json_cleaned,
-            GET_JSON_OBJECT(
-                {clean_ai_json}, '$.markdown_content'
-            ) AS parsed_markdown_content,
-            GET_JSON_OBJECT(
-                {clean_ai_json}, '$.classification.funnel_stage'
-            ) AS parsed_funnel_stage
-        FROM ai_result
+            ai_response,
+            {classif_expr} AS classification_json,
+            {markdown_expr} AS parsed_markdown_content,
+            GET_JSON_OBJECT({classif_expr}, '$.funnel_stage') AS parsed_funnel_stage,
+            GET_JSON_OBJECT({classif_expr}, '$.has_regulatory_content') AS parsed_regulatory,
+            GET_JSON_OBJECT({classif_expr}, '$.has_country_specific_context') AS parsed_country
+        FROM ai_raw
         """
         print("    [DEBUG] Raw AI_QUERY response:")
         df_debug = spark.sql(debug_query)
         for row in df_debug.collect():
-            raw = str(row["ai_raw_response"])
+            raw = str(row["ai_response"])
             print(f"      ID={row['id']} | title={row['title']}")
-            print(f"      ai_raw_response (first 500 chars): {raw[:500]}")
-            print(f"      ai_json_cleaned (first 500 chars): {str(row['ai_json_cleaned'])[:500]}")
+            print(f"      ai_response (first 500 chars): {raw[:500]}")
+            print(f"      classification_json: {row['classification_json']}")
             print(f"      parsed_markdown_content: {'OK (non-empty)' if row['parsed_markdown_content'] else 'NULL/EMPTY'}")
             print(f"      parsed_funnel_stage: {row['parsed_funnel_stage']}")
+            print(f"      parsed_regulatory: {row['parsed_regulatory']}")
+            print(f"      parsed_country: {row['parsed_country']}")
             print()
         return  # En mode debug, on ne fait pas le MERGE
 
     merge_query = f"""
     MERGE INTO {gold_table} AS target
     USING (
-        WITH ai_result AS (
+        WITH ai_raw AS (
             SELECT
                 id,
-                {clean_json_expr(
-                    "AI_QUERY('" + ai_model + "', CONCAT('" + ai_prompt_sql + "', raw_json))"
-                )} AS ai_json
+                AI_QUERY(
+                    '{ai_model}',
+                    CONCAT('{ai_prompt_sql}', raw_json)
+                ) AS ai_response
             FROM {gold_table}
             WHERE id IN ({ids_str})
+        ),
+        parsed AS (
+            SELECT
+                id,
+                {classif_expr} AS classif_json,
+                {markdown_expr} AS new_content_text
+            FROM ai_raw
         )
         SELECT
-            ar.id,
-            GET_JSON_OBJECT(ar.ai_json, '$.markdown_content') AS new_content_text,
-            GET_JSON_OBJECT(ar.ai_json, '$.classification.has_regulatory_content') AS regulatory_raw,
-            GET_JSON_OBJECT(ar.ai_json, '$.classification.has_country_specific_context') AS country_raw,
-            GET_JSON_OBJECT(ar.ai_json, '$.classification.funnel_stage') AS funnel_raw,
+            p.id,
+            p.new_content_text,
+            GET_JSON_OBJECT(p.classif_json, '$.has_regulatory_content') AS regulatory_raw,
+            GET_JSON_OBJECT(p.classif_json, '$.has_country_specific_context') AS country_raw,
+            GET_JSON_OBJECT(p.classif_json, '$.funnel_stage') AS funnel_raw,
             CURRENT_TIMESTAMP() AS new_date_formatted
-        FROM ai_result ar
+        FROM parsed p
     ) AS source
     ON target.id = source.id
     WHEN MATCHED AND source.new_content_text IS NOT NULL AND source.new_content_text != '' THEN UPDATE SET
@@ -518,34 +531,55 @@ if sample_id:
     print(f"Test AI_QUERY pour l'item ID={sample_id}")
     ai_prompt_escaped = AI_PROMPT_UNIFIED.replace("'", "''")
     df_test = spark.sql(f"""
+        WITH ai_raw AS (
+            SELECT
+                id,
+                title,
+                AI_QUERY(
+                    '{AI_MODEL}',
+                    CONCAT('{ai_prompt_escaped}', raw_json)
+                ) AS ai_response
+            FROM {GOLD_TABLE_FULL}
+            WHERE id = {sample_id}
+        )
         SELECT
             id,
             title,
-            AI_QUERY(
-                '{AI_MODEL}',
-                CONCAT('{ai_prompt_escaped}', raw_json)
-            ) AS ai_raw_response
-        FROM {GOLD_TABLE_FULL}
-        WHERE id = {sample_id}
+            ai_response,
+            TRIM(SUBSTRING(
+                ai_response,
+                LOCATE('---CLASSIFICATION---', ai_response) + 20,
+                LOCATE('---CONTENT---', ai_response) - LOCATE('---CLASSIFICATION---', ai_response) - 20
+            )) AS classification_json,
+            TRIM(SUBSTRING(
+                ai_response,
+                LOCATE('---CONTENT---', ai_response) + 14
+            )) AS markdown_content
+        FROM ai_raw
     """)
     for row in df_test.collect():
-        raw = str(row["ai_raw_response"])
+        raw = str(row["ai_response"])
+        classif = row["classification_json"]
+        md = row["markdown_content"]
         print(f"\n--- Reponse brute AI_QUERY (ID={row['id']}, title={row['title']}) ---")
         print(raw[:2000])
-        # Nettoyage des markdown fences avant parsing
-        import re
-        cleaned = re.sub(r'^\s*```[a-z]*\s*', '', raw)
-        cleaned = re.sub(r'\s*```\s*$', '', cleaned)
-        print(f"\n--- Reponse nettoyee (fences supprimees) ---")
-        print(cleaned[:500])
-        print(f"\n--- Tentative de parsing GET_JSON_OBJECT ---")
-        cleaned_escaped = cleaned.replace("'", "''")
-        df_parse = spark.sql(f"""
-            SELECT
-                GET_JSON_OBJECT('{cleaned_escaped}', '$.markdown_content') AS markdown_content,
-                GET_JSON_OBJECT('{cleaned_escaped}', '$.classification.funnel_stage') AS funnel_stage,
-                GET_JSON_OBJECT('{cleaned_escaped}', '$.classification.has_regulatory_content') AS has_regulatory
-        """)
-        display(df_parse)
+        print(f"\n--- Parsing par separateurs ---")
+        print(f"  classification_json: {classif}")
+        print(f"  markdown_content (first 500 chars): {str(md)[:500] if md else 'NULL/EMPTY'}")
+        # Test GET_JSON_OBJECT sur le bloc classification
+        if classif:
+            import re
+            classif_clean = re.sub(r'^\s*```[a-z]*\s*', '', classif)
+            classif_clean = re.sub(r'\s*```\s*$', '', classif_clean)
+            classif_escaped = classif_clean.replace("'", "''")
+            df_parse = spark.sql(f"""
+                SELECT
+                    GET_JSON_OBJECT('{classif_escaped}', '$.funnel_stage') AS funnel_stage,
+                    GET_JSON_OBJECT('{classif_escaped}', '$.has_regulatory_content') AS has_regulatory,
+                    GET_JSON_OBJECT('{classif_escaped}', '$.has_country_specific_context') AS has_country
+            """)
+            display(df_parse)
+        else:
+            print("  ERREUR: classification_json est NULL - separateurs non trouves dans la reponse")
 else:
     print("Aucun item disponible pour le test AI_QUERY.")
