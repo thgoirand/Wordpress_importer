@@ -12,14 +12,14 @@
 # MAGIC
 # MAGIC **Scope:** Articles de blog (`post`) uniquement.
 # MAGIC
-# MAGIC **Pipeline AI en 2 passes de classification :**
-# MAGIC 1. Generation du markdown a partir du `raw_json`
-# MAGIC 2. **Pass 1 - Scan leger** : classification sur titre + description uniquement (econome en tokens).
-# MAGIC    Retourne UNCERTAIN si confiance < 80%.
-# MAGIC 3. **Pass 2 - Analyse profonde** : uniquement pour les items UNCERTAIN,
-# MAGIC    analyse du contenu complet avec logique waterfall.
+# MAGIC **Pipeline AI unifie (1 seul appel par item) :**
+# MAGIC - Un prompt unique analyse le `raw_json` complet et retourne un JSON contenant :
+# MAGIC   - La **classification** (funnel_stage, has_regulatory_content, has_country_specific_context)
+# MAGIC   - Le **contenu markdown** formate
+# MAGIC - Logique de classification waterfall : BOFU > MOFU > TOFU > fallback TOFU.
 # MAGIC
 # MAGIC **Champs enrichis :**
+# MAGIC - `content_text` : contenu formate en markdown
 # MAGIC - `has_regulatory_content` : reference a une reglementation ou texte de loi
 # MAGIC - `has_country_specific_context` : contexte specifique a un pays ou marche
 # MAGIC - `funnel_stage` : stade du funnel marketing (TOFU / MOFU / BOFU)
@@ -58,86 +58,62 @@ BATCH_SIZE = 5
 # Nombre max d'items a traiter (None = tout traiter, ex: 5 pour les tests)
 MAX_ITEMS = None
 
-# System prompt for markdown formatting
-AI_PROMPT = (
-    "You are an expert in web content formatting. "
-    "Convert this WordPress JSON into clean, well-structured markdown. "
-    "Use headings (##, ###), lists, and format links properly. "
-    "Return only the markdown, without any explanations. "
-    "JSON: "
-)
+# --- Prompt unifie : markdown + classification en un seul appel AI ---
+AI_PROMPT_UNIFIED = (
+    "Role: You are an expert in B2B content marketing for Cegid (software vendor) "
+    "and a web formatting specialist.\n\n"
 
-# --- PASS 1 : Classification legere sur titre + description (econome en tokens) ---
-AI_PROMPT_CLASSIFICATION_LIGHT = (
-    "Role: You are an expert in B2B content marketing for Cegid (software vendor).\n\n"
-    "Task: Analyze the following Title and Short Description to categorize the content's marketing intent.\n\n"
-    "Constraint: If the inputs are too vague, generic, or if you lack confidence (>80%) "
-    "regarding any field, you MUST return \"UNCERTAIN\" for that field.\n\n"
-    "Classification Logic for funnel_stage:\n"
-    "- BOFU (Decision & Brand): Mentions \"Cegid\", specific products "
-    "(XRP, Flex, Talentsoft, Loop, Notilus, etc.), \"Price\", \"Demo\", \"Trial\", "
-    "\"Case Study\", or \"Client Success\".\n"
-    "- MOFU (Consideration & Solution): Mentions \"Software\", \"Tool\", \"Platform\", "
-    "\"Comparison\" (vs), \"How to choose\", \"Automation of [process]\", or \"Digitization\".\n"
-    "- TOFU (Awareness & Education): Mentions broad concepts, specific laws/regulations, "
-    "definitions, \"Guide to [Topic]\", \"Trends\", or \"Management tips\" "
-    "without implying a software solution.\n"
-    "- UNCERTAIN: The title is ambiguous (e.g., \"Optimizing Performance\") "
-    "and the description does not clarify if the solution is a software or a methodology.\n\n"
-    "Classification Logic for has_regulatory_content (true/false/UNCERTAIN):\n"
-    "- true: Title or description references a regulation, law, directive, standard, decree, "
-    "or legal framework (GDPR, DORA, finance law, labor code, ISO standard, etc.).\n"
-    "- false: No regulatory reference detected.\n"
-    "- UNCERTAIN: Cannot determine from title and description alone.\n\n"
-    "Classification Logic for has_country_specific_context (true/false/UNCERTAIN):\n"
-    "- true: Title or description references a specific country or national market "
-    "(French taxation, Spanish market, Italian legislation, etc.).\n"
-    "- false: Generic or international content.\n"
-    "- UNCERTAIN: Cannot determine from title and description alone.\n\n"
-    "Respond ONLY with a valid JSON object (no markdown, no explanation), in this exact format:\n"
-    '{\"has_regulatory_content\": true, \"has_country_specific_context\": false, \"funnel_stage\": \"TOFU\"}\n\n'
-    "Allowed values:\n"
-    "- has_regulatory_content: true, false, or \"UNCERTAIN\"\n"
-    "- has_country_specific_context: true, false, or \"UNCERTAIN\"\n"
-    "- funnel_stage: \"TOFU\", \"MOFU\", \"BOFU\", or \"UNCERTAIN\"\n\n"
-    "Input:\n"
-)
+    "Task: Analyze the provided WordPress JSON content (Title, Description, and Body) "
+    "to perform two simultaneous actions:\n"
+    "1. CLASSIFY the content strategically based on the Full Body analysis.\n"
+    "2. CONVERT the body content into clean, well-structured Markdown.\n\n"
 
-# --- PASS 2 : Classification profonde sur contenu complet (waterfall) ---
-AI_PROMPT_CLASSIFICATION_DEEP = (
-    "Role: You are an expert in content analysis. The previous analysis based on the title "
-    "was inconclusive. Now, analyze the FULL BODY CONTENT to make a definitive classification.\n\n"
-    "Decision Hierarchy (Waterfall Logic): Apply these rules in strict order. "
-    "Stop at the first match.\n\n"
-    "1. Check for BOFU (Brand/Product Focused):\n"
-    "   - Does the text explicitly pitch \"Cegid\" or its specific products as the solution?\n"
-    "   - Is it a customer success story, a product update, or a webinar replay about a product?\n"
-    "   -> If YES: classify as BOFU.\n\n"
-    "2. Check for MOFU (Solution Focused):\n"
-    "   - Does the text recommend using \"a software\", \"an ERP\", \"a SIRH\", "
-    "or \"digital tools\" to solve a problem?\n"
-    "   - Is it a comparison, a selection checklist, or a guide on "
-    "\"How to automate/digitize X\"?\n"
-    "   -> If YES: classify as MOFU.\n\n"
-    "3. Check for TOFU (Problem/Education Focused):\n"
-    "   - Is the text purely educational (legal news, definitions, manual management tips, trends)?\n"
-    "   - Does it explain \"Why\" or \"What\" without pushing a software solution immediately?\n"
-    "   -> If YES: classify as TOFU.\n\n"
-    "4. Fallback Rule: If the content remains ambiguous between general advice and software "
-    "promotion, default to TOFU. It is safer to assume the user is still learning "
-    "than to assume they are ready to buy.\n\n"
-    "Also determine:\n"
-    "- has_regulatory_content (true/false): Does the content reference any regulation, law, "
-    "directive, standard, decree, or legal framework?\n"
-    "- has_country_specific_context (true/false): Is the content specific to a particular "
-    "country or national market?\n\n"
-    "Respond ONLY with a valid JSON object (no markdown, no explanation), in this exact format:\n"
-    '{\"has_regulatory_content\": true, \"has_country_specific_context\": false, \"funnel_stage\": \"TOFU\"}\n\n'
-    "Allowed values (no UNCERTAIN allowed in this pass - you MUST decide):\n"
-    "- has_regulatory_content: true or false\n"
-    "- has_country_specific_context: true or false\n"
-    "- funnel_stage: \"TOFU\", \"MOFU\", or \"BOFU\"\n\n"
-    "Content:\n"
+    "--- PART 1: CLASSIFICATION LOGIC (Waterfall) ---\n"
+    "Apply these rules in strict order. Stop at the first match.\n\n"
+
+    "1. Check for BOFU (Decision & Brand):\n"
+    "   - Does the text explicitly pitch 'Cegid' or specific products "
+    "(XRP, Flex, Talentsoft, Loop, Notilus, Echo, etc.)?\n"
+    "   - Is it a customer success story, product update, price list, demo offer, "
+    "or webinar replay about a product?\n"
+    "   -> If YES: funnel_stage = 'BOFU'\n\n"
+
+    "2. Check for MOFU (Consideration & Solution):\n"
+    "   - Does the text recommend using 'a software', 'an ERP', 'a SIRH', "
+    "'digital tools', or 'automation' to solve a problem?\n"
+    "   - Is it a comparison (vs), a selection checklist, or a guide on "
+    "'How to choose/digitize'?\n"
+    "   -> If YES: funnel_stage = 'MOFU'\n\n"
+
+    "3. Check for TOFU (Awareness & Education):\n"
+    "   - Is the text purely educational (legal news, definitions, management tips, trends) "
+    "without pushing a software solution?\n"
+    "   - Does it explain 'Why' or broad concepts?\n"
+    "   -> If YES: funnel_stage = 'TOFU'\n\n"
+
+    "4. Fallback Rule:\n"
+    "   - If ambiguous between general advice and software promotion, "
+    "default to 'TOFU'.\n\n"
+
+    "--- ADDITIONAL METADATA ---\n"
+    "- has_regulatory_content (true/false): References regulations, laws, directives, decrees "
+    "(GDPR, DORA, Finance Law, Labor Code, ISO, etc.).\n"
+    "- has_country_specific_context (true/false): References a specific country or national market "
+    "(e.g., French taxation, Spanish market).\n\n"
+
+    "--- PART 2: MARKDOWN FORMATTING ---\n"
+    "- Convert the HTML/JSON body content into clean Markdown.\n"
+    "- Use proper headings (##, ###), bullet points, and format links [text](url).\n"
+    "- Remove WordPress shortcodes or inline styles.\n\n"
+
+    "--- OUTPUT FORMAT ---\n"
+    "Return ONLY a single valid JSON object with the following structure "
+    "(no markdown fences, no explanations):\n"
+    '{"classification": {"funnel_stage": "TOFU", "has_regulatory_content": true, '
+    '"has_country_specific_context": false}, '
+    '"markdown_content": "# Title\\n\\n## Subheading\\n\\nContent here..."}\n\n'
+
+    "Input JSON:\n"
 )
 
 # COMMAND ----------
@@ -218,11 +194,16 @@ display(df_to_process)
 
 # COMMAND ----------
 
-def process_batch_markdown(gold_table: str, batch_ids: list, ai_model: str,
-                           ai_prompt: str):
+def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
+                          ai_prompt: str):
     """
-    Etape 0 : Genere le content_text (markdown) a partir du raw_json pour un batch.
-    Met a jour la table gold avec le markdown genere.
+    Traitement unifie : classification + generation markdown en un seul appel AI.
+    Le prompt demande au modele de retourner un JSON contenant :
+    - classification.funnel_stage (TOFU/MOFU/BOFU)
+    - classification.has_regulatory_content (true/false)
+    - classification.has_country_specific_context (true/false)
+    - markdown_content (contenu formate en markdown)
+    Met a jour tous les champs enrichis dans la table gold.
     """
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
     ai_prompt_sql = ai_prompt.replace("'", "''")
@@ -230,197 +211,28 @@ def process_batch_markdown(gold_table: str, batch_ids: list, ai_model: str,
     merge_query = f"""
     MERGE INTO {gold_table} AS target
     USING (
+        WITH ai_result AS (
+            SELECT
+                id,
+                AI_QUERY(
+                    '{ai_model}',
+                    CONCAT('{ai_prompt_sql}', raw_json)
+                ) AS ai_json
+            FROM {gold_table}
+            WHERE id IN ({ids_str})
+        )
         SELECT
-            id,
-            AI_QUERY(
-                '{ai_model}',
-                CONCAT('{ai_prompt_sql}', raw_json)
-            ) AS new_content_text,
+            ar.id,
+            GET_JSON_OBJECT(ar.ai_json, '$.markdown_content') AS new_content_text,
+            GET_JSON_OBJECT(ar.ai_json, '$.classification.has_regulatory_content') AS regulatory_raw,
+            GET_JSON_OBJECT(ar.ai_json, '$.classification.has_country_specific_context') AS country_raw,
+            GET_JSON_OBJECT(ar.ai_json, '$.classification.funnel_stage') AS funnel_raw,
             CURRENT_TIMESTAMP() AS new_date_formatted
-        FROM {gold_table}
-        WHERE id IN ({ids_str})
+        FROM ai_result ar
     ) AS source
     ON target.id = source.id
     WHEN MATCHED THEN UPDATE SET
         content_text = source.new_content_text,
-        date_formatted = source.new_date_formatted
-    """
-    spark.sql(merge_query)
-
-
-def process_batch_classify_light(gold_table: str, batch_ids: list, ai_model: str,
-                                  ai_prompt_light: str):
-    """
-    Pass 1 : Classification legere sur titre + description uniquement.
-    Econome en tokens. Retourne UNCERTAIN si confiance insuffisante.
-    Met a jour les champs de classification dans la table gold.
-    Les valeurs UNCERTAIN sont stockees temporairement pour identification en pass 2.
-    """
-    ids_str = ", ".join(str(id_val) for id_val in batch_ids)
-    ai_prompt_sql = ai_prompt_light.replace("'", "''")
-
-    merge_query = f"""
-    MERGE INTO {gold_table} AS target
-    USING (
-        WITH light_classified AS (
-            SELECT
-                id,
-                AI_QUERY(
-                    '{ai_model}',
-                    CONCAT(
-                        '{ai_prompt_sql}',
-                        'Title: ', COALESCE(title, ''),
-                        '\\nDescription: ', COALESCE(meta_description, COALESCE(excerpt, ''))
-                    )
-                ) AS classification_json
-            FROM {gold_table}
-            WHERE id IN ({ids_str})
-        )
-        SELECT
-            lc.id,
-            lc.classification_json,
-            GET_JSON_OBJECT(lc.classification_json, '$.has_regulatory_content') AS regulatory_raw,
-            GET_JSON_OBJECT(lc.classification_json, '$.has_country_specific_context') AS country_raw,
-            GET_JSON_OBJECT(lc.classification_json, '$.funnel_stage') AS funnel_raw
-        FROM light_classified lc
-    ) AS source
-    ON target.id = source.id
-    WHEN MATCHED THEN UPDATE SET
-        has_regulatory_content = CASE
-            WHEN UPPER(TRIM(source.regulatory_raw)) = 'UNCERTAIN' THEN NULL
-            WHEN LOWER(TRIM(source.regulatory_raw)) = 'true' THEN true
-            ELSE false
-        END,
-        has_country_specific_context = CASE
-            WHEN UPPER(TRIM(source.country_raw)) = 'UNCERTAIN' THEN NULL
-            WHEN LOWER(TRIM(source.country_raw)) = 'true' THEN true
-            ELSE false
-        END,
-        funnel_stage = CASE UPPER(TRIM(source.funnel_raw))
-            WHEN 'TOFU' THEN 'TOFU'
-            WHEN 'MOFU' THEN 'MOFU'
-            WHEN 'BOFU' THEN 'BOFU'
-            WHEN 'UNCERTAIN' THEN 'UNCERTAIN'
-            ELSE 'UNCERTAIN'
-        END
-    """
-    spark.sql(merge_query)
-
-
-def get_uncertain_ids(gold_table: str, candidate_ids: list) -> list:
-    """
-    Identifies items with at least one UNCERTAIN field after pass 1.
-    An item is UNCERTAIN if:
-    - funnel_stage = 'UNCERTAIN'
-    - has_regulatory_content IS NULL (was UNCERTAIN)
-    - has_country_specific_context IS NULL (was UNCERTAIN)
-    """
-    ids_str = ", ".join(str(id_val) for id_val in candidate_ids)
-    query = f"""
-    SELECT id
-    FROM {gold_table}
-    WHERE id IN ({ids_str})
-      AND (
-          funnel_stage = 'UNCERTAIN'
-          OR has_regulatory_content IS NULL
-          OR has_country_specific_context IS NULL
-      )
-    """
-    rows = spark.sql(query).collect()
-    return [row["id"] for row in rows]
-
-
-def display_uncertain_details(gold_table: str, candidate_ids: list):
-    """
-    Displays detailed information about UNCERTAIN items after pass 1,
-    showing which fields are uncertain for each item.
-    Useful to evaluate whether the two-pass approach is relevant.
-    """
-    ids_str = ", ".join(str(id_val) for id_val in candidate_ids)
-    query = f"""
-    SELECT
-        id,
-        site_id,
-        title,
-        LEFT(COALESCE(meta_description, excerpt, ''), 120) AS description_preview,
-        CASE WHEN has_regulatory_content IS NULL THEN 'UNCERTAIN' ELSE CAST(has_regulatory_content AS STRING) END AS regulatory,
-        CASE WHEN has_country_specific_context IS NULL THEN 'UNCERTAIN' ELSE CAST(has_country_specific_context AS STRING) END AS country_specific,
-        funnel_stage
-    FROM {gold_table}
-    WHERE id IN ({ids_str})
-      AND (
-          funnel_stage = 'UNCERTAIN'
-          OR has_regulatory_content IS NULL
-          OR has_country_specific_context IS NULL
-      )
-    ORDER BY site_id, id
-    """
-    df_uncertain = spark.sql(query)
-    nb = df_uncertain.count()
-
-    if nb == 0:
-        print("  No UNCERTAIN items found.")
-        return
-
-    print(f"\n  Detail of {nb} UNCERTAIN item(s):")
-    print(f"  {'-'*80}")
-
-    rows = df_uncertain.collect()
-    for row in rows:
-        uncertain_fields = []
-        if row["regulatory"] == "UNCERTAIN":
-            uncertain_fields.append("regulatory")
-        if row["country_specific"] == "UNCERTAIN":
-            uncertain_fields.append("country_specific")
-        if row["funnel_stage"] == "UNCERTAIN":
-            uncertain_fields.append("funnel_stage")
-
-        print(f"  ID {row['id']} [{row['site_id']}] - {row['title']}")
-        print(f"    Description: {row['description_preview']}")
-        print(f"    Uncertain fields: {', '.join(uncertain_fields)}")
-        print(f"    Values -> regulatory={row['regulatory']}, country={row['country_specific']}, funnel={row['funnel_stage']}")
-
-    print(f"  {'-'*80}")
-    display(df_uncertain)
-
-
-def process_batch_classify_deep(gold_table: str, batch_ids: list, ai_model: str,
-                                 ai_prompt_deep: str):
-    """
-    Pass 2 : Classification profonde sur le contenu complet (content_text).
-    Uniquement pour les items dont la pass 1 a retourne UNCERTAIN.
-    Utilise une logique waterfall : BOFU > MOFU > TOFU > fallback TOFU.
-    Aucun UNCERTAIN n'est autorise en sortie de cette pass.
-    """
-    ids_str = ", ".join(str(id_val) for id_val in batch_ids)
-    ai_prompt_sql = ai_prompt_deep.replace("'", "''")
-
-    merge_query = f"""
-    MERGE INTO {gold_table} AS target
-    USING (
-        WITH deep_classified AS (
-            SELECT
-                id,
-                AI_QUERY(
-                    '{ai_model}',
-                    CONCAT(
-                        '{ai_prompt_sql}',
-                        content_text
-                    )
-                ) AS classification_json
-            FROM {gold_table}
-            WHERE id IN ({ids_str})
-        )
-        SELECT
-            dc.id,
-            dc.classification_json,
-            GET_JSON_OBJECT(dc.classification_json, '$.has_regulatory_content') AS regulatory_raw,
-            GET_JSON_OBJECT(dc.classification_json, '$.has_country_specific_context') AS country_raw,
-            GET_JSON_OBJECT(dc.classification_json, '$.funnel_stage') AS funnel_raw
-        FROM deep_classified dc
-    ) AS source
-    ON target.id = source.id
-    WHEN MATCHED THEN UPDATE SET
         has_regulatory_content = CASE LOWER(TRIM(source.regulatory_raw))
             WHEN 'true' THEN true ELSE false END,
         has_country_specific_context = CASE LOWER(TRIM(source.country_raw))
@@ -430,7 +242,8 @@ def process_batch_classify_deep(gold_table: str, batch_ids: list, ai_model: str,
             WHEN 'MOFU' THEN 'MOFU'
             WHEN 'BOFU' THEN 'BOFU'
             ELSE 'TOFU'
-        END
+        END,
+        date_formatted = source.new_date_formatted
     """
     spark.sql(merge_query)
 
@@ -439,14 +252,11 @@ def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
                       batch_size: int = BATCH_SIZE,
                       max_items: int = MAX_ITEMS,
                       ai_model: str = AI_MODEL,
-                      ai_prompt: str = AI_PROMPT,
-                      ai_prompt_light: str = AI_PROMPT_CLASSIFICATION_LIGHT,
-                      ai_prompt_deep: str = AI_PROMPT_CLASSIFICATION_DEEP):
+                      ai_prompt: str = AI_PROMPT_UNIFIED):
     """
-    Execute le pipeline AI complet en 3 phases :
-    1. Generation du markdown (raw_json -> content_text)
-    2. Pass 1 : Classification legere (titre + description, econome en tokens)
-    3. Pass 2 : Classification profonde (contenu complet, uniquement pour les UNCERTAIN)
+    Execute le pipeline AI unifie en une seule passe :
+    - Classification (funnel_stage, regulatory, country) + generation markdown
+      en un seul appel AI par item.
 
     max_items: nombre max d'items a traiter (None = tout traiter).
     """
@@ -470,71 +280,23 @@ def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
     print(f"Gold table: {gold_table}")
     print(f"{'='*60}")
 
-    # --- Phase 1: Markdown generation ---
-    print(f"\n--- Phase 1/3: Markdown generation ---")
+    # --- Single pass: Markdown + Classification ---
+    print(f"\n--- Unified AI pass: markdown + classification ---")
     processed = 0
     for idx, batch_ids in enumerate(batches, start=1):
         batch_len = len(batch_ids)
         print(f"  Batch {idx}/{nb_batches} ({batch_len} item(s))...")
         try:
-            process_batch_markdown(gold_table, batch_ids, ai_model, ai_prompt)
+            process_batch_unified(gold_table, batch_ids, ai_model, ai_prompt)
             processed += batch_len
-            print(f"    OK - {processed}/{total} markdown generated")
+            print(f"    OK - {processed}/{total} processed")
         except Exception as e:
             print(f"    ERROR batch {idx}: {e}")
             print(f"    IDs: {batch_ids}")
             continue
-
-    # --- Phase 2: Light classification (title + description) ---
-    print(f"\n--- Phase 2/3: Light classification (title + description) ---")
-    classified_light = 0
-    for idx, batch_ids in enumerate(batches, start=1):
-        batch_len = len(batch_ids)
-        print(f"  Batch {idx}/{nb_batches} ({batch_len} item(s))...")
-        try:
-            process_batch_classify_light(gold_table, batch_ids, ai_model, ai_prompt_light)
-            classified_light += batch_len
-            print(f"    OK - {classified_light}/{total} classified (pass 1)")
-        except Exception as e:
-            print(f"    ERROR batch {idx}: {e}")
-            print(f"    IDs: {batch_ids}")
-            continue
-
-    # --- Uncertain items detail (to evaluate two-pass relevance) ---
-    uncertain_ids = get_uncertain_ids(gold_table, all_ids)
-    nb_uncertain = len(uncertain_ids)
-
-    print(f"\n--- Uncertain items detail after pass 1: {nb_uncertain}/{total} ---")
-    display_uncertain_details(gold_table, all_ids)
-
-    # --- Phase 3: Deep classification (full content, UNCERTAIN only) ---
-    print(f"\n--- Phase 3/3: Deep classification ({nb_uncertain} UNCERTAIN item(s)) ---")
-
-    if nb_uncertain == 0:
-        print("  No UNCERTAIN items. Pass 2 not needed.")
-    else:
-        deep_batches = [uncertain_ids[i:i + batch_size]
-                        for i in range(0, nb_uncertain, batch_size)]
-        nb_deep_batches = len(deep_batches)
-        classified_deep = 0
-
-        for idx, batch_ids in enumerate(deep_batches, start=1):
-            batch_len = len(batch_ids)
-            print(f"  Batch {idx}/{nb_deep_batches} ({batch_len} item(s))...")
-            try:
-                process_batch_classify_deep(gold_table, batch_ids, ai_model, ai_prompt_deep)
-                classified_deep += batch_len
-                print(f"    OK - {classified_deep}/{nb_uncertain} re-classified (pass 2)")
-            except Exception as e:
-                print(f"    ERROR batch {idx}: {e}")
-                print(f"    IDs: {batch_ids}")
-                continue
 
     print(f"\n{'='*60}")
-    print(f"Pipeline completed:")
-    print(f"  - Markdown generated: {processed}/{total}")
-    print(f"  - Classification pass 1: {classified_light}/{total}")
-    print(f"  - UNCERTAIN items -> pass 2: {nb_uncertain}")
+    print(f"Pipeline completed: {processed}/{total} item(s) processed")
     print(f"{'='*60}")
 
     return processed
