@@ -231,7 +231,7 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
         FROM ai_result ar
     ) AS source
     ON target.id = source.id
-    WHEN MATCHED THEN UPDATE SET
+    WHEN MATCHED AND source.new_content_text IS NOT NULL AND source.new_content_text != '' THEN UPDATE SET
         content_text = source.new_content_text,
         has_regulatory_content = CASE LOWER(TRIM(source.regulatory_raw))
             WHEN 'true' THEN true ELSE false END,
@@ -357,3 +357,95 @@ display(spark.sql(f"""
     GROUP BY site_id
     ORDER BY site_id
 """))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 8. Diagnostic - Articles avec content_text NULL ou vide
+
+# COMMAND ----------
+
+# Diagnostic 1 : Items formtes (date_formatted non NULL) mais content_text vide
+# => Indique un probleme AI_QUERY (JSON malform, GET_JSON_OBJECT retourne NULL)
+print("=== Items marques comme formates MAIS content_text NULL/vide ===")
+df_ghost = spark.sql(f"""
+    SELECT
+        id,
+        title,
+        site_id,
+        date_formatted,
+        date_modified,
+        LEFT(raw_json, 200) AS raw_json_preview,
+        content_text IS NULL AS is_null,
+        CASE WHEN content_text = '' THEN true ELSE false END AS is_empty
+    FROM {GOLD_TABLE_FULL}
+    WHERE content_type = '{CONTENT_TYPE}'
+        AND date_formatted IS NOT NULL
+        AND (content_text IS NULL OR content_text = '')
+    ORDER BY date_formatted DESC
+""")
+print(f"Nombre d'items fantomes (formates mais sans contenu) : {df_ghost.count()}")
+display(df_ghost)
+
+# COMMAND ----------
+
+# Diagnostic 2 : Items jamais traites (ni content_text, ni date_formatted)
+print("=== Items jamais traites par l'AI ===")
+df_never = spark.sql(f"""
+    SELECT
+        id,
+        title,
+        site_id,
+        date_modified,
+        CASE WHEN raw_json IS NULL OR raw_json = '' THEN 'MISSING' ELSE 'OK' END AS raw_json_status,
+        LENGTH(raw_json) AS raw_json_length
+    FROM {GOLD_TABLE_FULL}
+    WHERE content_type = '{CONTENT_TYPE}'
+        AND date_formatted IS NULL
+        AND (content_text IS NULL OR content_text = '')
+    ORDER BY date_modified DESC
+""")
+print(f"Nombre d'items jamais traites : {df_never.count()}")
+display(df_never)
+
+# COMMAND ----------
+
+# Diagnostic 3 : Résumé global par état de traitement
+print("=== Resume global par etat ===")
+display(spark.sql(f"""
+    SELECT
+        CASE
+            WHEN date_formatted IS NOT NULL AND content_text IS NOT NULL AND content_text != ''
+                THEN 'OK - Formate avec contenu'
+            WHEN date_formatted IS NOT NULL AND (content_text IS NULL OR content_text = '')
+                THEN 'ERREUR - Formate mais contenu NULL'
+            WHEN date_formatted IS NULL AND (content_text IS NULL OR content_text = '')
+                THEN 'EN ATTENTE - Jamais traite'
+            WHEN date_formatted IS NULL AND content_text IS NOT NULL AND content_text != ''
+                THEN 'PARTIEL - Contenu present mais non marque formate'
+        END AS etat,
+        COUNT(*) AS nombre,
+        COLLECT_SET(site_id) AS sites_concernes
+    FROM {GOLD_TABLE_FULL}
+    WHERE content_type = '{CONTENT_TYPE}'
+    GROUP BY 1
+    ORDER BY nombre DESC
+"""))
+
+# COMMAND ----------
+
+# Diagnostic 4 : Test AI_QUERY sur un item specifique (decommenter pour tester)
+# Permet de verifier que le retour JSON est valide
+# sample_id = df_ghost.first()["id"] if df_ghost.count() > 0 else None
+# if sample_id:
+#     print(f"Test AI_QUERY pour l'item ID={sample_id}")
+#     display(spark.sql(f"""
+#         SELECT
+#             id,
+#             AI_QUERY(
+#                 '{AI_MODEL}',
+#                 CONCAT('{AI_PROMPT_UNIFIED.replace("'", "''")}', raw_json)
+#             ) AS ai_raw_response
+#         FROM {GOLD_TABLE_FULL}
+#         WHERE id = {sample_id}
+#     """))
