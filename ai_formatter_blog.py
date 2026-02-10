@@ -50,7 +50,7 @@ GOLD_TABLE_FULL = f"{DATABRICKS_CATALOG}.{DATABRICKS_SCHEMA}.{GOLD_TABLE}"
 CONTENT_TYPE = "post"
 
 # Modele AI a utiliser
-AI_MODEL = "databricks-claude-haiku-4-5"
+AI_MODEL = "databricks-gemini-3-flash"
 
 # Taille des batchs
 BATCH_SIZE = 5
