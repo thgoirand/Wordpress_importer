@@ -50,7 +50,7 @@ GOLD_TABLE_FULL = f"{DATABRICKS_CATALOG}.{DATABRICKS_SCHEMA}.{GOLD_TABLE}"
 CONTENT_TYPE = "post"
 
 # Modele AI a utiliser
-AI_MODEL = "databricks-claude-haiku-4-5"
+AI_MODEL = "databricks-gemini-3-flash"
 
 # Taille des batchs
 BATCH_SIZE = 5
@@ -126,10 +126,7 @@ AI_PROMPT_UNIFIED = (
     "- It must be a valid JSON string on a single line.\n"
     "- Encode newlines as the two-character sequence backslash-n.\n"
     "- Escape any double quotes inside the text with a backslash.\n"
-    "- Ensure the JSON is complete and properly closed.\n"
-    "- IMPORTANT: If the source content is very long, produce a concise but "
-    "faithful summary that captures ALL key sections and essential information. "
-    "Keep your total response under 4000 tokens to avoid truncation.\n\n"
+    "- Ensure the JSON is complete and properly closed.\n\n"
 
     "Input JSON:\n"
 )
@@ -232,48 +229,10 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
     ai_prompt_sql = ai_prompt.replace("'", "''")
 
-    # Limite la taille de l'input pour eviter les reponses tronquees
-    # Les articles tres longs (>30k chars de raw_json) generent des reponses
-    # qui depassent la limite de tokens du modele, produisant un JSON tronque
-    # que GET_JSON_OBJECT ne peut pas parser.
-    MAX_INPUT_LENGTH = 30000
-
     # Expression SQL pour nettoyer les markdown fences de la reponse AI
     # Supprime ```json au debut et ``` a la fin si presents
     def clean_json_expr(col_name):
         return f"TRIM(REGEXP_REPLACE(REGEXP_REPLACE({col_name}, '^\\\\s*```[a-z]*\\\\s*', ''), '\\\\s*```\\\\s*$', ''))"
-
-    # Expression SQL pour tenter de reparer un JSON tronque
-    # Si le JSON ne se termine pas par }, on essaie de le fermer
-    def repair_json_expr(col_name):
-        cleaned = clean_json_expr(col_name)
-        # Si le JSON cleaned se termine deja par }, on le retourne tel quel
-        # Sinon, on tronque au dernier \n et on ferme le JSON
-        return (
-            f"CASE "
-            f"WHEN {cleaned} RLIKE '\\\\}}\\\\s*$' THEN {cleaned} "
-            f"ELSE CONCAT("
-            f"  REGEXP_EXTRACT({cleaned}, '^(.*[^\\\\\\\\])\"', 1), "
-            f"  '\"\\n}}') "
-            f"END"
-        )
-
-    # Extraction fallback par regex quand GET_JSON_OBJECT echoue
-    def fallback_markdown_expr(col_name):
-        """Extrait markdown_content par regex si GET_JSON_OBJECT retourne NULL."""
-        cleaned = clean_json_expr(col_name)
-        return (
-            f"REGEXP_EXTRACT({cleaned}, "
-            f"'\"markdown_content\"\\\\s*:\\\\s*\"((?:[^\"\\\\\\\\]|\\\\\\\\.)*)\"', 1)"
-        )
-
-    def fallback_field_expr(col_name, json_field):
-        """Extrait un champ simple par regex si GET_JSON_OBJECT retourne NULL."""
-        cleaned = clean_json_expr(col_name)
-        return (
-            f"REGEXP_EXTRACT({cleaned}, "
-            f"'\"{json_field}\"\\\\s*:\\\\s*\"?([^\"\\\\,\\\\}}]+)\"?', 1)"
-        )
 
     clean_ai_json = clean_json_expr("ai_raw_response")
 
@@ -284,10 +243,9 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
             SELECT
                 id,
                 title,
-                LENGTH(raw_json) AS raw_json_length,
                 AI_QUERY(
                     '{ai_model}',
-                    CONCAT('{ai_prompt_sql}', SUBSTRING(raw_json, 1, {MAX_INPUT_LENGTH}))
+                    CONCAT('{ai_prompt_sql}', raw_json)
                 ) AS ai_raw_response
             FROM {gold_table}
             WHERE id IN ({ids_str})
@@ -295,18 +253,14 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
         SELECT
             id,
             title,
-            raw_json_length,
-            LENGTH(ai_raw_response) AS response_length,
             ai_raw_response,
             {clean_ai_json} AS ai_json_cleaned,
-            CASE WHEN {clean_ai_json} RLIKE '\\\\}}\\\\s*$' THEN 'VALID' ELSE 'TRUNCATED' END AS json_status,
             GET_JSON_OBJECT(
                 {clean_ai_json}, '$.markdown_content'
             ) AS parsed_markdown_content,
             GET_JSON_OBJECT(
                 {clean_ai_json}, '$.classification.funnel_stage'
-            ) AS parsed_funnel_stage,
-            {fallback_field_expr("ai_raw_response", "funnel_stage")} AS fallback_funnel_stage
+            ) AS parsed_funnel_stage
         FROM ai_result
         """
         print("    [DEBUG] Raw AI_QUERY response:")
@@ -314,16 +268,12 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
         for row in df_debug.collect():
             raw = str(row["ai_raw_response"])
             print(f"      ID={row['id']} | title={row['title']}")
-            print(f"      raw_json_length={row['raw_json_length']} | response_length={row['response_length']}")
-            print(f"      json_status: {row['json_status']}")
-            print(f"      ai_raw_response (first 500): {raw[:500]}")
+            print(f"      ai_raw_response: {raw}")
+            print(f"      ai_json_cleaned: {str(row['ai_json_cleaned'])}")
             print(f"      parsed_markdown_content: {'OK (non-empty)' if row['parsed_markdown_content'] else 'NULL/EMPTY'}")
             print(f"      parsed_funnel_stage: {row['parsed_funnel_stage']}")
-            print(f"      fallback_funnel_stage: {row['fallback_funnel_stage']}")
             print()
         return  # En mode debug, on ne fait pas le MERGE
-
-    ai_query_expr = f"AI_QUERY('{ai_model}', CONCAT('{ai_prompt_sql}', SUBSTRING(raw_json, 1, {MAX_INPUT_LENGTH})))"
 
     merge_query = f"""
     MERGE INTO {gold_table} AS target
@@ -331,29 +281,18 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
         WITH ai_result AS (
             SELECT
                 id,
-                {clean_json_expr(ai_query_expr)} AS ai_json,
-                {ai_query_expr} AS ai_raw_response
+                {clean_json_expr(
+                    "AI_QUERY('" + ai_model + "', CONCAT('" + ai_prompt_sql + "', raw_json))"
+                )} AS ai_json
             FROM {gold_table}
             WHERE id IN ({ids_str})
         )
         SELECT
             ar.id,
-            COALESCE(
-                GET_JSON_OBJECT(ar.ai_json, '$.markdown_content'),
-                {fallback_markdown_expr("ai_raw_response")}
-            ) AS new_content_text,
-            COALESCE(
-                GET_JSON_OBJECT(ar.ai_json, '$.classification.has_regulatory_content'),
-                {fallback_field_expr("ai_raw_response", "has_regulatory_content")}
-            ) AS regulatory_raw,
-            COALESCE(
-                GET_JSON_OBJECT(ar.ai_json, '$.classification.has_country_specific_context'),
-                {fallback_field_expr("ai_raw_response", "has_country_specific_context")}
-            ) AS country_raw,
-            COALESCE(
-                GET_JSON_OBJECT(ar.ai_json, '$.classification.funnel_stage'),
-                {fallback_field_expr("ai_raw_response", "funnel_stage")}
-            ) AS funnel_raw,
+            GET_JSON_OBJECT(ar.ai_json, '$.markdown_content') AS new_content_text,
+            GET_JSON_OBJECT(ar.ai_json, '$.classification.has_regulatory_content') AS regulatory_raw,
+            GET_JSON_OBJECT(ar.ai_json, '$.classification.has_country_specific_context') AS country_raw,
+            GET_JSON_OBJECT(ar.ai_json, '$.classification.funnel_stage') AS funnel_raw,
             CURRENT_TIMESTAMP() AS new_date_formatted
         FROM ai_result ar
     ) AS source
@@ -522,8 +461,6 @@ display(df_ghost)
 # COMMAND ----------
 
 # Diagnostic 2 : Items jamais traites (ni content_text, ni date_formatted)
-# Les items avec raw_json_length > 30000 sont susceptibles de generer des reponses
-# AI tronquees (JSON invalide -> GET_JSON_OBJECT retourne NULL)
 print("=== Items jamais traites par l'AI ===")
 df_never = spark.sql(f"""
     SELECT
@@ -532,8 +469,7 @@ df_never = spark.sql(f"""
         site_id,
         date_modified,
         CASE WHEN raw_json IS NULL OR raw_json = '' THEN 'MISSING' ELSE 'OK' END AS raw_json_status,
-        LENGTH(raw_json) AS raw_json_length,
-        CASE WHEN LENGTH(raw_json) > 30000 THEN 'LONG_CONTENT' ELSE 'OK' END AS size_warning
+        LENGTH(raw_json) AS raw_json_length
     FROM {GOLD_TABLE_FULL}
     WHERE content_type = '{CONTENT_TYPE}'
         AND date_formatted IS NULL
@@ -581,15 +517,13 @@ if sample_id is None:
 if sample_id:
     print(f"Test AI_QUERY pour l'item ID={sample_id}")
     ai_prompt_escaped = AI_PROMPT_UNIFIED.replace("'", "''")
-    # Utilise SUBSTRING pour limiter l'input (meme logique que le MERGE)
     df_test = spark.sql(f"""
         SELECT
             id,
             title,
-            LENGTH(raw_json) AS raw_json_length,
             AI_QUERY(
                 '{AI_MODEL}',
-                CONCAT('{ai_prompt_escaped}', SUBSTRING(raw_json, 1, 30000))
+                CONCAT('{ai_prompt_escaped}', raw_json)
             ) AS ai_raw_response
         FROM {GOLD_TABLE_FULL}
         WHERE id = {sample_id}
@@ -597,18 +531,13 @@ if sample_id:
     for row in df_test.collect():
         raw = str(row["ai_raw_response"])
         print(f"\n--- Reponse brute AI_QUERY (ID={row['id']}, title={row['title']}) ---")
-        print(f"    raw_json_length: {row['raw_json_length']}")
-        print(f"    response_length: {len(raw)}")
-        print(f"    response (first 1000 chars): {raw[:1000]}")
-        print(f"    response (last 200 chars): {raw[-200:]}")
+        print(raw)
         # Nettoyage des markdown fences avant parsing
         import re
         cleaned = re.sub(r'^\s*```[a-z]*\s*', '', raw)
         cleaned = re.sub(r'\s*```\s*$', '', cleaned)
-        # Verification si le JSON est tronque
-        is_truncated = not cleaned.rstrip().endswith('}')
-        print(f"\n--- Statut JSON ---")
-        print(f"    JSON tronque: {is_truncated}")
+        print(f"\n--- Reponse nettoyee (fences supprimees) ---")
+        print(cleaned)
         print(f"\n--- Tentative de parsing GET_JSON_OBJECT ---")
         cleaned_escaped = cleaned.replace("'", "''")
         df_parse = spark.sql(f"""
@@ -617,22 +546,6 @@ if sample_id:
                 GET_JSON_OBJECT('{cleaned_escaped}', '$.classification.funnel_stage') AS funnel_stage,
                 GET_JSON_OBJECT('{cleaned_escaped}', '$.classification.has_regulatory_content') AS has_regulatory
         """)
-        parse_row = df_parse.first()
-        print(f"    markdown_content: {'OK (non-empty, ' + str(len(str(parse_row['markdown_content']))) + ' chars)' if parse_row['markdown_content'] else 'NULL - GET_JSON_OBJECT FAILED'}")
-        print(f"    funnel_stage: {parse_row['funnel_stage']}")
-        print(f"    has_regulatory: {parse_row['has_regulatory']}")
-        if not parse_row['markdown_content']:
-            # Tentative de fallback regex
-            import json
-            match_funnel = re.search(r'"funnel_stage"\s*:\s*"([^"]+)"', cleaned)
-            match_regulatory = re.search(r'"has_regulatory_content"\s*:\s*(true|false)', cleaned)
-            match_country = re.search(r'"has_country_specific_context"\s*:\s*(true|false)', cleaned)
-            match_md = re.search(r'"markdown_content"\s*:\s*"((?:[^"\\]|\\.)*)"', cleaned)
-            print(f"\n--- Fallback REGEX ---")
-            print(f"    funnel_stage (regex): {match_funnel.group(1) if match_funnel else 'NOT FOUND'}")
-            print(f"    has_regulatory (regex): {match_regulatory.group(1) if match_regulatory else 'NOT FOUND'}")
-            print(f"    has_country_specific (regex): {match_country.group(1) if match_country else 'NOT FOUND'}")
-            print(f"    markdown_content (regex): {'OK (' + str(len(match_md.group(1))) + ' chars)' if match_md else 'NOT FOUND (content likely truncated mid-string)'}")
         display(df_parse)
 else:
     print("Aucun item disponible pour le test AI_QUERY.")
