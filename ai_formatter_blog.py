@@ -561,11 +561,24 @@ if sample_id:
         raw = str(row["ai_response"])
         classif = row["classification_json"]
         md = row["markdown_content"]
+        has_parsing_error = not classif or not md
+
         print(f"\n--- Reponse brute AI_QUERY (ID={row['id']}, title={row['title']}) ---")
-        print(raw[:2000])
+        print(f"  Longueur totale: {len(raw)} caracteres")
+        if has_parsing_error:
+            # Afficher la reponse COMPLETE pour investiguer le probleme
+            print("  *** PARSING ERROR: affichage de la reponse COMPLETE ***")
+            print(raw)
+        else:
+            print(raw[:2000])
+            if len(raw) > 2000:
+                print(f"  ... (tronque a 2000/{len(raw)} chars)")
+
         print(f"\n--- Parsing par separateurs ---")
         print(f"  classification_json: {classif}")
-        print(f"  markdown_content (first 500 chars): {str(md)[:500] if md else 'NULL/EMPTY'}")
+        print(f"  markdown_content: {'OK (' + str(len(str(md))) + ' chars)' if md else 'NULL/EMPTY'}")
+        if md:
+            print(f"  markdown_content (first 500 chars): {str(md)[:500]}")
         # Test GET_JSON_OBJECT sur le bloc classification
         if classif:
             import re
