@@ -12,11 +12,15 @@
 # MAGIC
 # MAGIC **Scope:** Articles de blog (`post`) uniquement.
 # MAGIC
-# MAGIC **Pipeline AI unifie (1 seul appel par item) :**
-# MAGIC - Un prompt unique analyse le `raw_json` complet et retourne un JSON contenant :
-# MAGIC   - La **classification** (funnel_stage, has_regulatory_content, has_country_specific_context)
-# MAGIC   - Le **contenu markdown** formate
-# MAGIC - Logique de classification waterfall : BOFU > MOFU > TOFU > fallback TOFU.
+# MAGIC **Pipeline AI en 2 passes distinctes :**
+# MAGIC - **Passe 1 - Markdown** : convertit le `raw_json` en contenu markdown propre et structure
+# MAGIC - **Passe 2 - Classification** : analyse le markdown nettoye pour determiner :
+# MAGIC   - `funnel_stage` (TOFU / MOFU / BOFU) via logique waterfall
+# MAGIC   - `has_regulatory_content` (reference reglementaire)
+# MAGIC   - `has_country_specific_context` (contexte pays)
+# MAGIC
+# MAGIC **Avantage :** chaque appel AI a une tache simple et focalisee, ce qui ameliore
+# MAGIC la fiabilite des resultats avec les modeles locaux (Llama).
 # MAGIC
 # MAGIC **Champs enrichis :**
 # MAGIC - `content_text` : contenu formate en markdown
@@ -58,17 +62,37 @@ BATCH_SIZE = 5
 # Nombre max d'items a traiter (None = tout traiter, ex: 5 pour les tests)
 MAX_ITEMS = None
 
-# --- Prompt unifie : markdown + classification en un seul appel AI ---
-AI_PROMPT_UNIFIED = (
-    "Role: You are an expert in B2B content marketing for Cegid (software vendor) "
-    "and a web formatting specialist.\n\n"
+# --- Prompt Passe 1 : Conversion raw_json -> Markdown ---
+AI_PROMPT_MARKDOWN = (
+    "Role: You are an expert web content formatting specialist.\n\n"
 
-    "Task: Analyze the provided WordPress JSON content (Title, Description, and Body) "
-    "to perform two simultaneous actions:\n"
-    "1. CLASSIFY the content strategically based on the Full Body analysis.\n"
-    "2. CONVERT the body content into clean, well-structured Markdown.\n\n"
+    "Task: Convert the provided WordPress JSON content (Title, Description, and Body) "
+    "into clean, well-structured Markdown.\n\n"
 
-    "--- PART 1: CLASSIFICATION LOGIC (Waterfall) ---\n"
+    "--- FORMATTING RULES ---\n"
+    "- Start with the article title as a level-1 heading (# Title).\n"
+    "- Use proper headings hierarchy (##, ###) to structure sections.\n"
+    "- Use bullet points and numbered lists where appropriate.\n"
+    "- Format links as [text](url).\n"
+    "- Remove all WordPress shortcodes, inline styles, and HTML artifacts.\n"
+    "- Preserve the logical structure and meaning of the original content.\n"
+    "- Do NOT add any commentary, analysis, or content that is not in the original.\n\n"
+
+    "--- OUTPUT FORMAT ---\n"
+    "Return ONLY the Markdown content. No wrapping, no JSON, no explanation.\n"
+    "Your response must start directly with the formatted Markdown.\n\n"
+
+    "Input JSON:\n"
+)
+
+# --- Prompt Passe 2 : Classification a partir du contenu Markdown ---
+AI_PROMPT_CLASSIFICATION = (
+    "Role: You are an expert in B2B content marketing for Cegid (software vendor).\n\n"
+
+    "Task: Analyze the following Markdown content of a blog article "
+    "and classify it according to the rules below.\n\n"
+
+    "--- CLASSIFICATION LOGIC (Waterfall) ---\n"
     "Apply these rules in strict order. Stop at the first match.\n\n"
 
     "1. Check for BOFU (Decision & Brand):\n"
@@ -101,11 +125,6 @@ AI_PROMPT_UNIFIED = (
     "- has_country_specific_context (true/false): References a specific country or national market "
     "(e.g., French taxation, Spanish market).\n\n"
 
-    "--- PART 2: MARKDOWN FORMATTING ---\n"
-    "- Convert the HTML/JSON body content into clean Markdown.\n"
-    "- Use proper headings (##, ###), bullet points, and format links [text](url).\n"
-    "- Remove WordPress shortcodes or inline styles.\n\n"
-
     "--- OUTPUT FORMAT ---\n"
     "Return ONLY a valid JSON object. Your entire response must start with the "
     "opening { and end with the closing }.\n"
@@ -114,21 +133,12 @@ AI_PROMPT_UNIFIED = (
 
     "JSON structure:\n"
     "{\n"
-    '  "classification": {\n'
-    '    "funnel_stage": "TOFU",\n'
-    '    "has_regulatory_content": true,\n'
-    '    "has_country_specific_context": false\n'
-    "  },\n"
-    '  "markdown_content": "# Title\\n\\nContent here..."\n'
+    '  "funnel_stage": "TOFU",\n'
+    '  "has_regulatory_content": true,\n'
+    '  "has_country_specific_context": false\n'
     "}\n\n"
 
-    "Rules for markdown_content:\n"
-    "- It must be a valid JSON string on a single line.\n"
-    "- Encode newlines as the two-character sequence backslash-n.\n"
-    "- Escape any double quotes inside the text with a backslash.\n"
-    "- Ensure the JSON is complete and properly closed.\n\n"
-
-    "Input JSON:\n"
+    "Markdown content to classify:\n"
 )
 
 # COMMAND ----------
@@ -209,35 +219,84 @@ display(df_to_process)
 
 # COMMAND ----------
 
-def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
-                          ai_prompt: str, debug: bool = False):
+def process_batch_markdown(gold_table: str, batch_ids: list, ai_model: str,
+                           ai_prompt: str, debug: bool = False):
     """
-    Traitement unifie : classification + generation markdown en un seul appel AI.
-    Le prompt demande au modele de retourner un JSON contenant :
-    - classification.funnel_stage (TOFU/MOFU/BOFU)
-    - classification.has_regulatory_content (true/false)
-    - classification.has_country_specific_context (true/false)
-    - markdown_content (contenu formate en markdown)
-    Met a jour tous les champs enrichis dans la table gold.
+    Passe 1 : Conversion raw_json -> Markdown.
+    Le prompt demande au modele de retourner directement du markdown (pas de JSON).
+    Met a jour content_text et date_formatted dans la table gold.
+
+    Si debug=True, affiche la reponse brute de AI_QUERY sans effectuer le MERGE.
+    """
+    ids_str = ", ".join(str(id_val) for id_val in batch_ids)
+    ai_prompt_sql = ai_prompt.replace("'", "''")
+
+    if debug:
+        debug_query = f"""
+        SELECT
+            id,
+            title,
+            AI_QUERY(
+                '{ai_model}',
+                CONCAT('{ai_prompt_sql}', raw_json)
+            ) AS ai_raw_response
+        FROM {gold_table}
+        WHERE id IN ({ids_str})
+        """
+        print("    [DEBUG] Passe 1 - Markdown - Raw AI_QUERY response:")
+        df_debug = spark.sql(debug_query)
+        for row in df_debug.collect():
+            raw = str(row["ai_raw_response"])
+            print(f"      ID={row['id']} | title={row['title']}")
+            print(f"      response length: {len(raw)} chars")
+            print(f"      response preview: {raw[:500]}...")
+            print()
+        return
+
+    merge_query = f"""
+    MERGE INTO {gold_table} AS target
+    USING (
+        SELECT
+            id,
+            AI_QUERY(
+                '{ai_model}',
+                CONCAT('{ai_prompt_sql}', raw_json)
+            ) AS new_content_text,
+            CURRENT_TIMESTAMP() AS new_date_formatted
+        FROM {gold_table}
+        WHERE id IN ({ids_str})
+    ) AS source
+    ON target.id = source.id
+    WHEN MATCHED AND source.new_content_text IS NOT NULL AND source.new_content_text != '' THEN UPDATE SET
+        content_text = source.new_content_text,
+        date_formatted = source.new_date_formatted
+    """
+    spark.sql(merge_query)
+
+
+def process_batch_classification(gold_table: str, batch_ids: list, ai_model: str,
+                                 ai_prompt: str, debug: bool = False):
+    """
+    Passe 2 : Classification a partir du contenu markdown (content_text).
+    Le prompt analyse le markdown nettoye et retourne un JSON de classification.
+    Met a jour funnel_stage, has_regulatory_content, has_country_specific_context.
+
+    Pre-requis : content_text doit etre rempli (passe 1 executee).
 
     Note: la reponse AI est nettoyee des markdown fences (```json...```)
     avant le parsing JSON, car certains modeles les ajoutent malgre les instructions.
 
-    Si debug=True, affiche la reponse brute de AI_QUERY avant le MERGE
-    pour diagnostiquer les problemes de parsing JSON.
+    Si debug=True, affiche la reponse brute de AI_QUERY sans effectuer le MERGE.
     """
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
     ai_prompt_sql = ai_prompt.replace("'", "''")
 
     # Expression SQL pour nettoyer les markdown fences de la reponse AI
-    # Supprime ```json au debut et ``` a la fin si presents
     def clean_json_expr(col_name):
         return f"TRIM(REGEXP_REPLACE(REGEXP_REPLACE({col_name}, '^\\\\s*```[a-z]*\\\\s*', ''), '\\\\s*```\\\\s*$', ''))"
 
-    clean_ai_json = clean_json_expr("ai_raw_response")
-
-    # --- Mode debug : afficher la reponse brute AI_QUERY ---
     if debug:
+        clean_ai_json = clean_json_expr("ai_raw_response")
         debug_query = f"""
         WITH ai_result AS (
             SELECT
@@ -245,7 +304,7 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
                 title,
                 AI_QUERY(
                     '{ai_model}',
-                    CONCAT('{ai_prompt_sql}', raw_json)
+                    CONCAT('{ai_prompt_sql}', content_text)
                 ) AS ai_raw_response
             FROM {gold_table}
             WHERE id IN ({ids_str})
@@ -256,24 +315,28 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
             ai_raw_response,
             {clean_ai_json} AS ai_json_cleaned,
             GET_JSON_OBJECT(
-                {clean_ai_json}, '$.markdown_content'
-            ) AS parsed_markdown_content,
+                {clean_ai_json}, '$.funnel_stage'
+            ) AS parsed_funnel_stage,
             GET_JSON_OBJECT(
-                {clean_ai_json}, '$.classification.funnel_stage'
-            ) AS parsed_funnel_stage
+                {clean_ai_json}, '$.has_regulatory_content'
+            ) AS parsed_regulatory,
+            GET_JSON_OBJECT(
+                {clean_ai_json}, '$.has_country_specific_context'
+            ) AS parsed_country
         FROM ai_result
         """
-        print("    [DEBUG] Raw AI_QUERY response:")
+        print("    [DEBUG] Passe 2 - Classification - Raw AI_QUERY response:")
         df_debug = spark.sql(debug_query)
         for row in df_debug.collect():
             raw = str(row["ai_raw_response"])
             print(f"      ID={row['id']} | title={row['title']}")
             print(f"      ai_raw_response: {raw}")
             print(f"      ai_json_cleaned: {str(row['ai_json_cleaned'])}")
-            print(f"      parsed_markdown_content: {'OK (non-empty)' if row['parsed_markdown_content'] else 'NULL/EMPTY'}")
             print(f"      parsed_funnel_stage: {row['parsed_funnel_stage']}")
+            print(f"      parsed_regulatory: {row['parsed_regulatory']}")
+            print(f"      parsed_country: {row['parsed_country']}")
             print()
-        return  # En mode debug, on ne fait pas le MERGE
+        return
 
     merge_query = f"""
     MERGE INTO {gold_table} AS target
@@ -282,23 +345,20 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
             SELECT
                 id,
                 {clean_json_expr(
-                    "AI_QUERY('" + ai_model + "', CONCAT('" + ai_prompt_sql + "', raw_json))"
+                    "AI_QUERY('" + ai_model + "', CONCAT('" + ai_prompt_sql + "', content_text))"
                 )} AS ai_json
             FROM {gold_table}
             WHERE id IN ({ids_str})
         )
         SELECT
             ar.id,
-            GET_JSON_OBJECT(ar.ai_json, '$.markdown_content') AS new_content_text,
-            GET_JSON_OBJECT(ar.ai_json, '$.classification.has_regulatory_content') AS regulatory_raw,
-            GET_JSON_OBJECT(ar.ai_json, '$.classification.has_country_specific_context') AS country_raw,
-            GET_JSON_OBJECT(ar.ai_json, '$.classification.funnel_stage') AS funnel_raw,
-            CURRENT_TIMESTAMP() AS new_date_formatted
+            GET_JSON_OBJECT(ar.ai_json, '$.has_regulatory_content') AS regulatory_raw,
+            GET_JSON_OBJECT(ar.ai_json, '$.has_country_specific_context') AS country_raw,
+            GET_JSON_OBJECT(ar.ai_json, '$.funnel_stage') AS funnel_raw
         FROM ai_result ar
     ) AS source
     ON target.id = source.id
-    WHEN MATCHED AND source.new_content_text IS NOT NULL AND source.new_content_text != '' THEN UPDATE SET
-        content_text = source.new_content_text,
+    WHEN MATCHED THEN UPDATE SET
         has_regulatory_content = CASE LOWER(TRIM(source.regulatory_raw))
             WHEN 'true' THEN true ELSE false END,
         has_country_specific_context = CASE LOWER(TRIM(source.country_raw))
@@ -308,69 +368,115 @@ def process_batch_unified(gold_table: str, batch_ids: list, ai_model: str,
             WHEN 'MOFU' THEN 'MOFU'
             WHEN 'BOFU' THEN 'BOFU'
             ELSE 'TOFU'
-        END,
-        date_formatted = source.new_date_formatted
+        END
     """
     spark.sql(merge_query)
+
+
+def get_items_to_classify(gold_table: str) -> list:
+    """
+    Identifie les articles de blog qui ont un content_text (markdown)
+    mais pas encore de classification (funnel_stage NULL).
+    Utilise apres la passe 1 pour alimenter la passe 2.
+    """
+    query = f"""
+    SELECT id
+    FROM {gold_table}
+    WHERE content_type = '{CONTENT_TYPE}'
+        AND content_text IS NOT NULL AND content_text != ''
+        AND (funnel_stage IS NULL OR funnel_stage = '')
+    ORDER BY date_modified DESC
+    """
+    return [row["id"] for row in spark.sql(query).collect()]
 
 
 def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
                       batch_size: int = BATCH_SIZE,
                       max_items: int = MAX_ITEMS,
                       ai_model: str = AI_MODEL,
-                      ai_prompt: str = AI_PROMPT_UNIFIED,
                       debug: bool = False):
     """
-    Execute le pipeline AI unifie en une seule passe :
-    - Classification (funnel_stage, regulatory, country) + generation markdown
-      en un seul appel AI par item.
+    Execute le pipeline AI en 2 passes distinctes :
+    - Passe 1 : Conversion raw_json -> Markdown (met a jour content_text)
+    - Passe 2 : Classification du markdown (met a jour funnel_stage, regulatory, country)
 
     max_items: nombre max d'items a traiter (None = tout traiter).
-    debug: si True, affiche la reponse brute AI_QUERY sans effectuer le MERGE.
+    debug: si True, affiche les reponses brutes AI_QUERY sans effectuer les MERGE.
     """
+    # === PASSE 1 : Markdown ===
     df = get_items_to_process(gold_table)
     all_ids = [row["id"] for row in df.select("id").collect()]
 
     if max_items is not None:
         all_ids = all_ids[:max_items]
 
-    total = len(all_ids)
+    total_md = len(all_ids)
 
-    if total == 0:
-        print("No items to process.")
-        return 0
-
-    batches = [all_ids[i:i + batch_size] for i in range(0, total, batch_size)]
-    nb_batches = len(batches)
-
-    print(f"Processing {total} item(s) in {nb_batches} batch(es) of {batch_size} max")
+    print(f"{'='*60}")
     print(f"Model: {ai_model}")
     print(f"Gold table: {gold_table}")
     if debug:
         print(f"*** DEBUG MODE: responses will be displayed, NO data will be written ***")
     print(f"{'='*60}")
 
-    # --- Single pass: Markdown + Classification ---
-    print(f"\n--- Unified AI pass: markdown + classification ---")
-    processed = 0
-    for idx, batch_ids in enumerate(batches, start=1):
-        batch_len = len(batch_ids)
-        print(f"  Batch {idx}/{nb_batches} ({batch_len} item(s))...")
-        try:
-            process_batch_unified(gold_table, batch_ids, ai_model, ai_prompt,
-                                  debug=debug)
-            processed += batch_len
-            print(f"    OK - {processed}/{total} processed")
-        except Exception as e:
-            print(f"    ERROR batch {idx}: {e}")
-            print(f"    IDs: {batch_ids}")
-            continue
+    processed_md = 0
+    if total_md > 0:
+        batches_md = [all_ids[i:i + batch_size] for i in range(0, total_md, batch_size)]
+        nb_batches_md = len(batches_md)
+
+        print(f"\n--- Passe 1/2 : Markdown ({total_md} item(s), {nb_batches_md} batch(es)) ---")
+        for idx, batch_ids in enumerate(batches_md, start=1):
+            batch_len = len(batch_ids)
+            print(f"  Batch {idx}/{nb_batches_md} ({batch_len} item(s))...")
+            try:
+                process_batch_markdown(gold_table, batch_ids, ai_model,
+                                       AI_PROMPT_MARKDOWN, debug=debug)
+                processed_md += batch_len
+                print(f"    OK - {processed_md}/{total_md} processed")
+            except Exception as e:
+                print(f"    ERROR batch {idx}: {e}")
+                print(f"    IDs: {batch_ids}")
+                continue
+    else:
+        print("\n--- Passe 1/2 : Markdown - No items to process ---")
+
+    # === PASSE 2 : Classification ===
+    # On recupere les items qui ont un markdown mais pas encore de classification
+    ids_to_classify = get_items_to_classify(gold_table)
+    if max_items is not None:
+        ids_to_classify = ids_to_classify[:max_items]
+
+    total_cls = len(ids_to_classify)
+    processed_cls = 0
+
+    if total_cls > 0:
+        batches_cls = [ids_to_classify[i:i + batch_size]
+                       for i in range(0, total_cls, batch_size)]
+        nb_batches_cls = len(batches_cls)
+
+        print(f"\n--- Passe 2/2 : Classification ({total_cls} item(s), {nb_batches_cls} batch(es)) ---")
+        for idx, batch_ids in enumerate(batches_cls, start=1):
+            batch_len = len(batch_ids)
+            print(f"  Batch {idx}/{nb_batches_cls} ({batch_len} item(s))...")
+            try:
+                process_batch_classification(gold_table, batch_ids, ai_model,
+                                             AI_PROMPT_CLASSIFICATION, debug=debug)
+                processed_cls += batch_len
+                print(f"    OK - {processed_cls}/{total_cls} classified")
+            except Exception as e:
+                print(f"    ERROR batch {idx}: {e}")
+                print(f"    IDs: {batch_ids}")
+                continue
+    else:
+        print("\n--- Passe 2/2 : Classification - No items to classify ---")
 
     print(f"\n{'='*60}")
-    print(f"Pipeline completed: {processed}/{total} item(s) processed")
+    print(f"Pipeline completed:")
+    print(f"  Passe 1 (Markdown)       : {processed_md}/{total_md} item(s)")
+    print(f"  Passe 2 (Classification) : {processed_cls}/{total_cls} item(s)")
     print(f"{'='*60}")
 
-    return processed
+    return processed_md, processed_cls
 
 # COMMAND ----------
 
@@ -505,47 +611,66 @@ display(spark.sql(f"""
 
 # COMMAND ----------
 
-# Diagnostic 4 : Test AI_QUERY sur un item specifique
-# Affiche la reponse brute + le resultat du parsing JSON
+# Diagnostic 4 : Test AI_QUERY sur un item specifique (les 2 passes)
 sample_id = df_ghost.first()["id"] if df_ghost.count() > 0 else None
 if sample_id is None:
-    # Pas d'items fantomes, on prend un item quelconque a traiter
     df_any = get_items_to_process(GOLD_TABLE_FULL)
     if df_any.count() > 0:
         sample_id = df_any.first()["id"]
 
 if sample_id:
-    print(f"Test AI_QUERY pour l'item ID={sample_id}")
-    ai_prompt_escaped = AI_PROMPT_UNIFIED.replace("'", "''")
-    df_test = spark.sql(f"""
+    # --- Test Passe 1 : Markdown ---
+    print(f"=== Test Passe 1 (Markdown) pour l'item ID={sample_id} ===")
+    ai_prompt_md_escaped = AI_PROMPT_MARKDOWN.replace("'", "''")
+    df_test_md = spark.sql(f"""
         SELECT
             id,
             title,
             AI_QUERY(
                 '{AI_MODEL}',
-                CONCAT('{ai_prompt_escaped}', raw_json)
+                CONCAT('{ai_prompt_md_escaped}', raw_json)
             ) AS ai_raw_response
         FROM {GOLD_TABLE_FULL}
         WHERE id = {sample_id}
     """)
-    for row in df_test.collect():
-        raw = str(row["ai_raw_response"])
-        print(f"\n--- Reponse brute AI_QUERY (ID={row['id']}, title={row['title']}) ---")
-        print(raw)
-        # Nettoyage des markdown fences avant parsing
-        import re
-        cleaned = re.sub(r'^\s*```[a-z]*\s*', '', raw)
-        cleaned = re.sub(r'\s*```\s*$', '', cleaned)
-        print(f"\n--- Reponse nettoyee (fences supprimees) ---")
-        print(cleaned)
-        print(f"\n--- Tentative de parsing GET_JSON_OBJECT ---")
-        cleaned_escaped = cleaned.replace("'", "''")
-        df_parse = spark.sql(f"""
+    markdown_result = None
+    for row in df_test_md.collect():
+        markdown_result = str(row["ai_raw_response"])
+        print(f"\n--- Reponse Passe 1 (ID={row['id']}, title={row['title']}) ---")
+        print(f"Length: {len(markdown_result)} chars")
+        print(markdown_result[:1000])
+        if len(markdown_result) > 1000:
+            print("... (truncated)")
+
+    # --- Test Passe 2 : Classification ---
+    if markdown_result:
+        print(f"\n=== Test Passe 2 (Classification) pour l'item ID={sample_id} ===")
+        ai_prompt_cls_escaped = AI_PROMPT_CLASSIFICATION.replace("'", "''")
+        markdown_escaped = markdown_result.replace("'", "''")
+        df_test_cls = spark.sql(f"""
             SELECT
-                GET_JSON_OBJECT('{cleaned_escaped}', '$.markdown_content') AS markdown_content,
-                GET_JSON_OBJECT('{cleaned_escaped}', '$.classification.funnel_stage') AS funnel_stage,
-                GET_JSON_OBJECT('{cleaned_escaped}', '$.classification.has_regulatory_content') AS has_regulatory
+                AI_QUERY(
+                    '{AI_MODEL}',
+                    CONCAT('{ai_prompt_cls_escaped}', '{markdown_escaped}')
+                ) AS ai_raw_response
         """)
-        display(df_parse)
+        for row in df_test_cls.collect():
+            raw = str(row["ai_raw_response"])
+            print(f"\n--- Reponse brute Classification ---")
+            print(raw)
+            import re
+            cleaned = re.sub(r'^\s*```[a-z]*\s*', '', raw)
+            cleaned = re.sub(r'\s*```\s*$', '', cleaned)
+            print(f"\n--- Reponse nettoyee ---")
+            print(cleaned)
+            print(f"\n--- Parsing JSON ---")
+            cleaned_escaped = cleaned.replace("'", "''")
+            df_parse = spark.sql(f"""
+                SELECT
+                    GET_JSON_OBJECT('{cleaned_escaped}', '$.funnel_stage') AS funnel_stage,
+                    GET_JSON_OBJECT('{cleaned_escaped}', '$.has_regulatory_content') AS has_regulatory,
+                    GET_JSON_OBJECT('{cleaned_escaped}', '$.has_country_specific_context') AS has_country
+            """)
+            display(df_parse)
 else:
     print("Aucun item disponible pour le test AI_QUERY.")
