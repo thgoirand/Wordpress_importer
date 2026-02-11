@@ -38,7 +38,7 @@ GOLD_TABLE_FULL = f"{DATABRICKS_CATALOG}.{DATABRICKS_SCHEMA}.{GOLD_TABLE}"
 CONTENT_TYPE = "product"
 
 # Modele AI a utiliser
-AI_MODEL = "databricks-claude-haiku-4-5"
+AI_MODEL = "databricks-llama-maverick-4"
 
 # Taille des batchs
 BATCH_SIZE = 5
