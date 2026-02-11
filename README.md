@@ -29,7 +29,7 @@ PySpark DataFrames
 Databricks Delta Tables (gdp_cdt_dev_04_gld.sandbox_mkt)
     │  (optionnel)
     ▼
-AI Formatting (Claude Haiku via Databricks AI Functions)
+AI Formatting (Llama 4 Maverick via Databricks AI Functions)
 ```
 
 ## Tables cibles
@@ -193,14 +193,14 @@ run_import_pipeline(sites_to_import=["fr"], incremental=False, truncate_first=Tr
 
 ### ai_formatter_blog.py — Formatage IA des articles de blog
 
-**Modèle** : Claude Haiku via Databricks AI Functions (`AI_QUERY`)
+**Modèle** : Llama 4 Maverick via Databricks AI Functions (`AI_QUERY`)
 **Scope** : Articles de blog (`post`)
 
 Convertit le JSON brut des articles en markdown structuré :
 
 1. Identifie les articles non formatés ou récemment modifiés (colonne `date_formatted`).
 2. Découpe en lots (par défaut 5 éléments).
-3. Appelle Claude Haiku pour chaque lot via `AI_QUERY`.
+3. Appelle Llama 4 Maverick pour chaque lot via `AI_QUERY`.
 4. Met à jour `content_text` et `date_formatted` via MERGE.
 
 ```python
@@ -211,7 +211,7 @@ total_processed = run_ai_formatting()
 
 ### ai_formatter_landing_page.py — Formatage IA des landing pages
 
-**Modèle** : Claude Haiku via Databricks AI Functions (`AI_QUERY`)
+**Modèle** : Llama 4 Maverick via Databricks AI Functions (`AI_QUERY`)
 **Scope** : Landing pages (`landing_page`)
 
 Convertit le JSON brut des landing pages (blocs ACF : header, grilles, arguments) en markdown structuré. Même processus par batch que le formatter blog.
@@ -224,7 +224,7 @@ total_processed = run_ai_formatting()
 
 ### ai_formatter_product.py — Formatage IA des produits
 
-**Modèle** : Claude Haiku via Databricks AI Functions (`AI_QUERY`)
+**Modèle** : Llama 4 Maverick via Databricks AI Functions (`AI_QUERY`)
 **Scope** : Produits (`product`)
 
 Convertit le JSON brut des pages produit (blocs ACF : header, arguments produit, features) en markdown structuré. Même processus par batch que le formatter blog.
@@ -237,7 +237,7 @@ total_processed = run_ai_formatting()
 
 ### ai_formatter_use_case.py — Formatage IA des études de cas + key figures
 
-**Modèle** : Claude Haiku via Databricks AI Functions (`AI_QUERY`)
+**Modèle** : Llama 4 Maverick via Databricks AI Functions (`AI_QUERY`)
 **Scope** : Études de cas (`study_case`)
 
 Post-traitement spécifique aux use cases qui :
@@ -245,7 +245,7 @@ Post-traitement spécifique aux use cases qui :
 1. Identifie les study cases non formatés ou récemment modifiés.
 2. Ajoute automatiquement la colonne `key_figures` (ARRAY<STRING>) si absente.
 3. Découpe en lots (par défaut 5 éléments).
-4. Appelle Claude Haiku deux fois par lot via `AI_QUERY` :
+4. Appelle Llama 4 Maverick deux fois par lot via `AI_QUERY` :
    - Génération du contenu markdown (`content_text`)
    - Extraction des chiffres clés (`key_figures`) : pourcentages, gains, ROI, etc.
 5. Met à jour `content_text`, `key_figures` et `date_formatted` via MERGE.
