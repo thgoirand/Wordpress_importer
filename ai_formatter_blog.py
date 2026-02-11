@@ -50,7 +50,7 @@ GOLD_TABLE_FULL = f"{DATABRICKS_CATALOG}.{DATABRICKS_SCHEMA}.{GOLD_TABLE}"
 CONTENT_TYPE = "post"
 
 # Modele AI a utiliser
-AI_MODEL = "databricks-llama-maverick-4"
+AI_MODEL = "system.ai.llama-4-maverick"
 
 # Taille des batchs
 BATCH_SIZE = 5
