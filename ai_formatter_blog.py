@@ -63,8 +63,11 @@ MAX_ITEMS = None
 AI_PROMPT_MARKDOWN = (
     "Role: You are a web formatting specialist.\n\n"
 
-    "Task: Convert the provided WordPress JSON content (Title, Description, and Body) "
-    "into clean, well-structured Markdown.\n\n"
+    "Task: Convert the ENTIRE provided WordPress JSON into clean, well-structured Markdown. "
+    "The JSON contains all elements of a blog article: title, meta description, body content "
+    "(rendered HTML), excerpt, slug, categories, tags, and featured image. "
+    "You must process ALL these elements to produce a complete markdown representation "
+    "of the article.\n\n"
 
     "--- FORMATTING RULES ---\n"
     "- Use proper headings (##, ###) to reflect the document structure.\n"
