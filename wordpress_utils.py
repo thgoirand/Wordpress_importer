@@ -90,6 +90,9 @@ SILVER_TABLE = "cegid_website_plt"
 # GLD (Gold) : table finale enrichie par les fonctions IA
 GOLD_TABLE = "cegid_website_gld"
 
+# Table des taxonomies (categories, tags, occupations, solutions, secteurs, product_types)
+TAXONOMY_TABLE = "cegid_website_taxonomy"
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -586,6 +589,7 @@ GOLD_SCHEMA = StructType([
     StructField("categories", ArrayType(IntegerType()), True),
     StructField("tags", ArrayType(IntegerType()), True),
     StructField("custom_taxonomies", MapType(StringType(), ArrayType(IntegerType())), True),
+    StructField("occupation_names", ArrayType(StringType()), True),
 
     # --- DATES ---
     StructField("date_published", TimestampType(), True),
@@ -741,6 +745,41 @@ def upsert_gold_from_silver(catalog: str, schema: str, gold_table: str,
     """)
     print(f"Sync silver -> gold termine dans {full_gold}")
 
+
+def enrich_gold_occupation_names(catalog: str, schema: str, gold_table: str,
+                                  taxonomy_table: str, content_type: str = None):
+    """
+    Enrichit la table gold avec les noms des occupations resolus depuis la table taxonomies.
+    Fait un JOIN entre les IDs d'occupation stockes dans custom_taxonomies['occupation']
+    et la table cegid_website_taxonomy (taxonomy = 'occupation') pour remonter les noms.
+    """
+    full_gold = f"{catalog}.{schema}.{gold_table}"
+    full_taxonomy = f"{catalog}.{schema}.{taxonomy_table}"
+
+    type_filter = f"AND g.content_type = '{content_type}'" if content_type else ""
+
+    spark.sql(f"""
+        MERGE INTO {full_gold} AS target
+        USING (
+            SELECT
+                g.id,
+                COLLECT_LIST(t.title) AS occupation_names
+            FROM {full_gold} g
+            LATERAL VIEW EXPLODE(g.custom_taxonomies['occupation']) AS occ_id
+            INNER JOIN {full_taxonomy} t
+                ON t.wp_id = occ_id
+                AND t.site_id = g.site_id
+                AND t.taxonomy = 'occupation'
+            WHERE g.custom_taxonomies['occupation'] IS NOT NULL
+                {type_filter}
+            GROUP BY g.id
+        ) AS source
+        ON target.id = source.id
+        WHEN MATCHED THEN UPDATE SET
+            occupation_names = source.occupation_names
+    """)
+    print(f"Enrichissement occupation_names termine dans {full_gold}")
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -749,9 +788,9 @@ def upsert_gold_from_silver(catalog: str, schema: str, gold_table: str,
 # MAGIC Ce notebook expose les variables et fonctions suivantes:
 # MAGIC - `WP_SITES`, `WP_SITES_TO_IMPORT`, `WORDPRESS_CONFIG`
 # MAGIC - `DATABRICKS_CATALOG`, `DATABRICKS_SCHEMA`
-# MAGIC - `BRONZE_TABLES`, `SILVER_TABLE`, `GOLD_TABLE`
+# MAGIC - `BRONZE_TABLES`, `SILVER_TABLE`, `GOLD_TABLE`, `TAXONOMY_TABLE`
 # MAGIC - `BRONZE_SCHEMA`, `SILVER_SCHEMA`, `GOLD_SCHEMA`
 # MAGIC - `clean_html_content()`, `get_nested_value()`, `parse_wp_date()`, `calculate_composite_id()`
 # MAGIC - `WordPressConnector`
 # MAGIC - `create_delta_table()`, `get_last_imported_id()`, `get_last_modified_date()`
-# MAGIC - `upsert_bronze()`, `upsert_silver()`, `upsert_gold_from_silver()`
+# MAGIC - `upsert_bronze()`, `upsert_silver()`, `upsert_gold_from_silver()`, `enrich_gold_occupation_names()`

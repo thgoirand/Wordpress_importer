@@ -82,6 +82,15 @@ upsert_gold_from_silver(
     content_type=CONTENT_TYPE
 )
 
+# Enrichit les noms d'occupation depuis la table taxonomies
+enrich_gold_occupation_names(
+    catalog=DATABRICKS_CATALOG,
+    schema=DATABRICKS_SCHEMA,
+    gold_table=GOLD_TABLE,
+    taxonomy_table=TAXONOMY_TABLE,
+    content_type=CONTENT_TYPE
+)
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -236,6 +245,7 @@ display(spark.sql(f"""
         id,
         title,
         LEFT(content_text, 300) AS content_preview,
+        occupation_names,
         date_formatted,
         date_modified
     FROM {GOLD_TABLE_FULL}
