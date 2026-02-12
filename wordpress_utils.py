@@ -764,14 +764,16 @@ def enrich_gold_occupation_names(catalog: str, schema: str, gold_table: str,
             SELECT
                 g.id,
                 COLLECT_LIST(t.title) AS occupation_names
-            FROM {full_gold} g
-            LATERAL VIEW EXPLODE(g.custom_taxonomies['occupation']) AS occ_id
+            FROM (
+                SELECT id, site_id, EXPLODE(custom_taxonomies['occupation']) AS occ_id
+                FROM {full_gold}
+                WHERE custom_taxonomies['occupation'] IS NOT NULL
+                    {type_filter.replace('g.', '')}
+            ) g
             INNER JOIN {full_taxonomy} t
-                ON t.wp_id = occ_id
+                ON t.wp_id = g.occ_id
                 AND t.site_id = g.site_id
                 AND t.taxonomy = 'occupation'
-            WHERE g.custom_taxonomies['occupation'] IS NOT NULL
-                {type_filter}
             GROUP BY g.id
         ) AS source
         ON target.id = source.id
