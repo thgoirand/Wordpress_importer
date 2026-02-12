@@ -611,7 +611,9 @@ GOLD_SCHEMA = StructType([
     StructField("key_figures", ArrayType(StringType()), True),
     StructField("has_regulatory_content", BooleanType(), True),
     StructField("has_country_specific_context", BooleanType(), True),
+    StructField("contains_infographics", BooleanType(), True),
     StructField("funnel_stage", StringType(), True),
+    StructField("localizable", BooleanType(), True),
 
     # --- DONNEES BRUTES ---
     StructField("raw_json", StringType(), True),
