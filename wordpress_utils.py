@@ -762,17 +762,20 @@ def enrich_gold_occupation_names(catalog: str, schema: str, gold_table: str,
         MERGE INTO {full_gold} AS target
         USING (
             SELECT
-                g.id,
+                exploded.id,
                 COLLECT_LIST(t.title) AS occupation_names
-            FROM {full_gold} g
-            LATERAL VIEW EXPLODE(g.custom_taxonomies['occupation']) AS occ_id
+            FROM (
+                SELECT g.id, g.site_id, occ_id
+                FROM {full_gold} g
+                LATERAL VIEW EXPLODE(g.custom_taxonomies['occupation']) AS occ_id
+                WHERE g.custom_taxonomies['occupation'] IS NOT NULL
+                    {type_filter}
+            ) exploded
             INNER JOIN {full_taxonomy} t
-                ON t.wp_id = occ_id
-                AND t.site_id = g.site_id
+                ON t.wp_id = exploded.occ_id
+                AND t.site_id = exploded.site_id
                 AND t.taxonomy = 'occupation'
-            WHERE g.custom_taxonomies['occupation'] IS NOT NULL
-                {type_filter}
-            GROUP BY g.id
+            GROUP BY exploded.id
         ) AS source
         ON target.id = source.id
         WHEN MATCHED THEN UPDATE SET
