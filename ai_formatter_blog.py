@@ -3,8 +3,8 @@
 # MAGIC
 # MAGIC # Formatage AI des contenus Blog WordPress (Silver -> Gold)
 # MAGIC
-# MAGIC Ce notebook formate les contenus blog bruts (raw_json) en markdown structure
-# MAGIC et classifie le contenu via `AI_QUERY` (Databricks AI Functions).
+# MAGIC Ce notebook formate les contenus blog bruts (raw_json) en markdown structure,
+# MAGIC nettoie les appels a l'action et classifie le contenu via `AI_QUERY` (Databricks AI Functions).
 # MAGIC
 # MAGIC **Architecture Medallion :**
 # MAGIC - **Source** : table PLT `cegid_website_plt` (contenus standardises)
@@ -12,16 +12,21 @@
 # MAGIC
 # MAGIC **Scope:** Articles de blog (`post`) uniquement.
 # MAGIC
-# MAGIC **Pipeline AI en 2 etapes (2 appels par item) :**
-# MAGIC 1. Standardiser le contenu `raw_json` en **markdown propre** (`content_text`).
-# MAGIC 2. Classifier ce markdown nettoye (funnel_stage, regulatory, country).
-# MAGIC - Logique de classification waterfall : BOFU > MOFU > TOFU > fallback TOFU.
+# MAGIC **Pipeline AI en 3 etapes (3 appels par item) :**
+# MAGIC 1. Standardiser le contenu `raw_json` en **markdown propre**.
+# MAGIC 2. **Nettoyer** le markdown : suppression des CTA (blocs demo, ebook, webinar...),
+# MAGIC    des sommaires, et reinsertion de l'excerpt en debut de contenu.
+# MAGIC 3. **Classifier** le contenu nettoye (funnel_stage, regulatory, country, infographics).
+# MAGIC    - Logique de classification waterfall : BOFU > MOFU > TOFU > fallback TOFU.
+# MAGIC    - Retourne aussi le titre, la meta_description et le contenu nettoye.
 # MAGIC
 # MAGIC **Champs enrichis :**
-# MAGIC - `content_text` : contenu formate en markdown
+# MAGIC - `content_text` : contenu nettoye en markdown (sans CTA ni sommaire)
 # MAGIC - `has_regulatory_content` : reference a une reglementation ou texte de loi
 # MAGIC - `has_country_specific_context` : contexte specifique a un pays ou marche
+# MAGIC - `contains_infographics` : contient des infographies ou visuels de donnees
 # MAGIC - `funnel_stage` : stade du funnel marketing (TOFU / MOFU / BOFU)
+# MAGIC - `localizable` : synthese true/false, false des qu'un des 3 flags booleens est true
 # MAGIC
 # MAGIC **Pre-requis:** Executer `blog_importer` avant pour alimenter la table silver.
 
@@ -69,10 +74,38 @@ AI_PROMPT_MARKDOWN = (
     "JSON: "
 )
 
-# --- Prompt 2 : classification basee sur markdown nettoye ---
+# --- Prompt 2 : nettoyage du contenu (suppression CTA, sommaires) ---
+AI_PROMPT_CLEANUP = (
+    "Role: You are a strict content editor. Your ONLY task is to remove specific elements "
+    "from the markdown below. You MUST NOT rewrite, rephrase, summarize, or modify any other "
+    "part of the content.\n\n"
+
+    "Elements to REMOVE entirely:\n"
+    "- Calls to action (CTA): demo request blocks, free trial offers, contact forms, "
+    "newsletter signup prompts\n"
+    "- Promotional blocks: ebook highlights/downloads, webinar invitations or replays, "
+    "whitepaper offers, any 'discover our solution' or 'request a demo' sections\n"
+    "- Table of contents / summary sections (sommaires)\n"
+    "- 'Read also' / 'Related articles' / 'You might also like' sections\n"
+    "- Banner or sidebar-style promotional content embedded in the article\n\n"
+
+    "STRICT RULES:\n"
+    "- Do NOT rewrite or rephrase any sentence\n"
+    "- Do NOT add any new content\n"
+    "- Do NOT summarize or shorten paragraphs\n"
+    "- Do NOT change the heading structure or hierarchy\n"
+    "- Do NOT modify links, formatting, or layout beyond removing the listed elements\n"
+    "- Preserve ALL editorial content exactly as-is\n\n"
+
+    "Return ONLY the cleaned markdown, with no explanation.\n\n"
+    "Markdown to clean:\n"
+)
+
+# --- Prompt 3 : classification basee sur contenu nettoye ---
 AI_PROMPT_CLASSIFICATION = (
     "Role: You are an expert in B2B content marketing for Cegid (software vendor).\n\n"
-    "Task: Classify the provided CLEAN MARKDOWN content using the following waterfall rules.\n"
+    "Task: Analyze the provided content (title, meta_description, and cleaned markdown body) "
+    "and classify it using the following waterfall rules.\n"
     "Apply the rules in strict order and stop at the first match.\n\n"
 
     "1. BOFU (Decision & Brand):\n"
@@ -96,19 +129,26 @@ AI_PROMPT_CLASSIFICATION = (
     "Additional flags:\n"
     "- has_regulatory_content (true/false): mentions regulations/laws/directives/decrees "
     "(GDPR, DORA, Finance Law, Labor Code, ISO, etc.)\n"
-    "- has_country_specific_context (true/false): mentions a specific country/national market\n\n"
+    "- has_country_specific_context (true/false): mentions a specific country/national market\n"
+    "- contains_infographics (true/false): the content references, embeds, or describes infographics, "
+    "data visualizations, charts, or statistical diagrams as part of the article\n\n"
 
     "Output format requirements:\n"
     "- Return ONLY a valid JSON object\n"
     "- No markdown fences, no commentary\n"
+    "- Include the title, meta_description, and content_cleaned fields as provided\n"
     "- Use exactly this structure:\n"
     "{\n"
+    '  "title": "<the title as provided>",\n'
+    '  "meta_description": "<the meta_description as provided>",\n'
+    '  "content_cleaned": "<the full cleaned markdown body as provided>",\n'
     '  "funnel_stage": "TOFU",\n'
     '  "has_regulatory_content": true,\n'
-    '  "has_country_specific_context": false\n'
+    '  "has_country_specific_context": false,\n'
+    '  "contains_infographics": false\n'
     "}\n\n"
 
-    "Clean markdown to analyze:\n"
+    "Content to analyze:\n"
 )
 
 # COMMAND ----------
@@ -198,16 +238,19 @@ display(df_to_process)
 
 # COMMAND ----------
 
-def process_batch_two_steps(gold_table: str, batch_ids: list, ai_model: str,
-                            ai_prompt_markdown: str,
-                            ai_prompt_classification: str,
-                            debug: bool = False):
+def process_batch_three_steps(gold_table: str, batch_ids: list, ai_model: str,
+                              ai_prompt_markdown: str,
+                              ai_prompt_cleanup: str,
+                              ai_prompt_classification: str,
+                              debug: bool = False):
     """
-    Traitement en 2 etapes :
-    1) raw_json -> markdown nettoye
-    2) markdown nettoye -> classification JSON
+    Traitement en 3 etapes :
+    1) raw_json -> markdown brut
+    2) markdown brut -> markdown nettoye (suppression CTA, sommaires, reinsertion excerpt)
+    3) titre + meta_description + markdown nettoye -> classification JSON
 
     Met a jour les champs enrichis dans la table gold.
+    Le champ localizable est calcule comme NOT(has_regulatory OR has_country_specific OR contains_infographics).
 
     Note: la reponse de classification est nettoyee des markdown fences (```json...```)
     avant le parsing JSON, car certains modeles les ajoutent malgre les instructions.
@@ -217,6 +260,7 @@ def process_batch_two_steps(gold_table: str, batch_ids: list, ai_model: str,
     """
     ids_str = ", ".join(str(id_val) for id_val in batch_ids)
     ai_prompt_markdown_sql = ai_prompt_markdown.replace("'", "''")
+    ai_prompt_cleanup_sql = ai_prompt_cleanup.replace("'", "''")
     ai_prompt_classification_sql = ai_prompt_classification.replace("'", "''")
 
     # Expression SQL pour nettoyer les markdown fences de la reponse AI
@@ -226,6 +270,10 @@ def process_batch_two_steps(gold_table: str, batch_ids: list, ai_model: str,
 
     clean_ai_json = clean_json_expr("classification_raw_response")
 
+    # Expression SQL pour prepender l'excerpt au contenu si present
+    # L'excerpt est reinscrit en debut de contenu markdown nettoye
+    excerpt_prefix = "CASE WHEN excerpt IS NOT NULL AND excerpt != '' THEN CONCAT(excerpt, '\\n\\n', cleaned_content) ELSE cleaned_content END"
+
     # --- Mode debug : afficher la reponse brute AI_QUERY ---
     if debug:
         debug_query = f"""
@@ -233,6 +281,8 @@ def process_batch_two_steps(gold_table: str, batch_ids: list, ai_model: str,
             SELECT
                 id,
                 title,
+                meta_description,
+                excerpt,
                 AI_QUERY(
                     '{ai_model}',
                     CONCAT('{ai_prompt_markdown_sql}', raw_json)
@@ -240,36 +290,74 @@ def process_batch_two_steps(gold_table: str, batch_ids: list, ai_model: str,
             FROM {gold_table}
             WHERE id IN ({ids_str})
         ),
-        classification_result AS (
+        cleanup_result AS (
             SELECT
                 id,
                 title,
+                meta_description,
+                excerpt,
                 markdown_content,
                 AI_QUERY(
                     '{ai_model}',
-                    CONCAT('{ai_prompt_classification_sql}', markdown_content)
-                ) AS classification_raw_response
+                    CONCAT('{ai_prompt_cleanup_sql}', markdown_content)
+                ) AS cleaned_content
             FROM markdown_result
+        ),
+        with_excerpt AS (
+            SELECT
+                id,
+                title,
+                meta_description,
+                excerpt,
+                markdown_content,
+                cleaned_content,
+                {excerpt_prefix} AS final_content
+            FROM cleanup_result
+        ),
+        classification_result AS (
+            SELECT
+                we.*,
+                AI_QUERY(
+                    '{ai_model}',
+                    CONCAT(
+                        '{ai_prompt_classification_sql}',
+                        'Title: ', COALESCE(title, ''), '\\n',
+                        'Meta description: ', COALESCE(meta_description, ''), '\\n',
+                        'Content:\\n', final_content
+                    )
+                ) AS classification_raw_response
+            FROM with_excerpt we
         )
         SELECT
             id,
             title,
+            meta_description,
+            excerpt,
             markdown_content,
+            cleaned_content,
+            final_content,
             classification_raw_response,
             {clean_ai_json} AS ai_json_cleaned,
             GET_JSON_OBJECT(
                 {clean_ai_json}, '$.funnel_stage'
-            ) AS parsed_funnel_stage
+            ) AS parsed_funnel_stage,
+            GET_JSON_OBJECT(
+                {clean_ai_json}, '$.contains_infographics'
+            ) AS parsed_contains_infographics
         FROM classification_result
         """
         print("    [DEBUG] Raw AI_QUERY responses:")
         df_debug = spark.sql(debug_query)
         for row in df_debug.collect():
             print(f"      ID={row['id']} | title={row['title']}")
-            print(f"      markdown_content: {str(row['markdown_content'])}")
+            print(f"      excerpt: {str(row['excerpt'])[:100]}")
+            print(f"      markdown_content: {str(row['markdown_content'])[:200]}")
+            print(f"      cleaned_content: {str(row['cleaned_content'])[:200]}")
+            print(f"      final_content (with excerpt): {str(row['final_content'])[:200]}")
             print(f"      classification_raw_response: {str(row['classification_raw_response'])}")
             print(f"      ai_json_cleaned: {str(row['ai_json_cleaned'])}")
             print(f"      parsed_funnel_stage: {row['parsed_funnel_stage']}")
+            print(f"      parsed_contains_infographics: {row['parsed_contains_infographics']}")
             print()
         return  # En mode debug, on ne fait pas le MERGE
 
@@ -279,6 +367,9 @@ def process_batch_two_steps(gold_table: str, batch_ids: list, ai_model: str,
         WITH markdown_result AS (
             SELECT
                 id,
+                title,
+                meta_description,
+                excerpt,
                 AI_QUERY(
                     '{ai_model}',
                     CONCAT('{ai_prompt_markdown_sql}', raw_json)
@@ -286,20 +377,44 @@ def process_batch_two_steps(gold_table: str, batch_ids: list, ai_model: str,
             FROM {gold_table}
             WHERE id IN ({ids_str})
         ),
-        classification_result AS (
+        cleanup_result AS (
             SELECT
                 id,
-                markdown_content,
-                {clean_json_expr(
-                    "AI_QUERY('" + ai_model + "', CONCAT('" + ai_prompt_classification_sql + "', markdown_content))"
-                )} AS classification_json
+                title,
+                meta_description,
+                excerpt,
+                AI_QUERY(
+                    '{ai_model}',
+                    CONCAT('{ai_prompt_cleanup_sql}', markdown_content)
+                ) AS cleaned_content
             FROM markdown_result
+        ),
+        with_excerpt AS (
+            SELECT
+                id,
+                title,
+                meta_description,
+                {excerpt_prefix} AS final_content
+            FROM cleanup_result
+        ),
+        classification_result AS (
+            SELECT
+                we.id,
+                we.final_content,
+                {clean_json_expr(
+                    "AI_QUERY('" + ai_model + "', CONCAT('" + ai_prompt_classification_sql + "', "
+                    "'Title: ', COALESCE(we.title, ''), '\\n', "
+                    "'Meta description: ', COALESCE(we.meta_description, ''), '\\n', "
+                    "'Content:\\n', we.final_content))"
+                )} AS classification_json
+            FROM with_excerpt we
         )
         SELECT
             cr.id,
-            cr.markdown_content AS new_content_text,
+            cr.final_content AS new_content_text,
             GET_JSON_OBJECT(cr.classification_json, '$.has_regulatory_content') AS regulatory_raw,
             GET_JSON_OBJECT(cr.classification_json, '$.has_country_specific_context') AS country_raw,
+            GET_JSON_OBJECT(cr.classification_json, '$.contains_infographics') AS infographics_raw,
             GET_JSON_OBJECT(cr.classification_json, '$.funnel_stage') AS funnel_raw,
             CURRENT_TIMESTAMP() AS new_date_formatted
         FROM classification_result cr
@@ -311,11 +426,20 @@ def process_batch_two_steps(gold_table: str, batch_ids: list, ai_model: str,
             WHEN 'true' THEN true ELSE false END,
         has_country_specific_context = CASE LOWER(TRIM(source.country_raw))
             WHEN 'true' THEN true ELSE false END,
+        contains_infographics = CASE LOWER(TRIM(source.infographics_raw))
+            WHEN 'true' THEN true ELSE false END,
         funnel_stage = CASE UPPER(TRIM(source.funnel_raw))
             WHEN 'TOFU' THEN 'TOFU'
             WHEN 'MOFU' THEN 'MOFU'
             WHEN 'BOFU' THEN 'BOFU'
             ELSE 'TOFU'
+        END,
+        localizable = CASE
+            WHEN LOWER(TRIM(source.regulatory_raw)) = 'true'
+                OR LOWER(TRIM(source.country_raw)) = 'true'
+                OR LOWER(TRIM(source.infographics_raw)) = 'true'
+            THEN false
+            ELSE true
         END,
         date_formatted = source.new_date_formatted
     """
@@ -327,12 +451,14 @@ def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
                       max_items: int = MAX_ITEMS,
                       ai_model: str = AI_MODEL,
                       ai_prompt_markdown: str = AI_PROMPT_MARKDOWN,
+                      ai_prompt_cleanup: str = AI_PROMPT_CLEANUP,
                       ai_prompt_classification: str = AI_PROMPT_CLASSIFICATION,
                       debug: bool = False):
     """
-    Execute le pipeline AI en deux passes :
+    Execute le pipeline AI en trois passes :
     - Passe 1: generation markdown depuis raw_json
-    - Passe 2: classification depuis markdown nettoye
+    - Passe 2: nettoyage du markdown (suppression CTA, sommaires, reinsertion excerpt)
+    - Passe 3: classification depuis contenu nettoye (avec titre et meta_description)
 
     max_items: nombre max d'items a traiter (None = tout traiter).
     debug: si True, affiche la reponse brute AI_QUERY sans effectuer le MERGE.
@@ -359,17 +485,18 @@ def run_ai_formatting(gold_table: str = GOLD_TABLE_FULL,
         print(f"*** DEBUG MODE: responses will be displayed, NO data will be written ***")
     print(f"{'='*60}")
 
-    print(f"\n--- AI pass 1+2: markdown standardization then classification ---")
+    print(f"\n--- AI pass 1+2+3: markdown -> cleanup -> classification ---")
     processed = 0
     for idx, batch_ids in enumerate(batches, start=1):
         batch_len = len(batch_ids)
         print(f"  Batch {idx}/{nb_batches} ({batch_len} item(s))...")
         try:
-            process_batch_two_steps(
+            process_batch_three_steps(
                 gold_table,
                 batch_ids,
                 ai_model,
                 ai_prompt_markdown,
+                ai_prompt_cleanup,
                 ai_prompt_classification,
                 debug=debug
             )
@@ -411,7 +538,9 @@ display(spark.sql(f"""
         occupation_names,
         has_regulatory_content,
         has_country_specific_context,
+        contains_infographics,
         funnel_stage,
+        localizable,
         date_formatted,
         date_modified
     FROM {GOLD_TABLE_FULL}
@@ -434,10 +563,14 @@ display(spark.sql(f"""
         SUM(CASE WHEN has_regulatory_content IS NULL THEN 1 ELSE 0 END) AS regulatory_unknown,
         SUM(CASE WHEN has_country_specific_context = true THEN 1 ELSE 0 END) AS with_country_specific,
         SUM(CASE WHEN has_country_specific_context IS NULL THEN 1 ELSE 0 END) AS country_unknown,
+        SUM(CASE WHEN contains_infographics = true THEN 1 ELSE 0 END) AS with_infographics,
+        SUM(CASE WHEN contains_infographics IS NULL THEN 1 ELSE 0 END) AS infographics_unknown,
         SUM(CASE WHEN funnel_stage = 'TOFU' THEN 1 ELSE 0 END) AS funnel_tofu,
         SUM(CASE WHEN funnel_stage = 'MOFU' THEN 1 ELSE 0 END) AS funnel_mofu,
         SUM(CASE WHEN funnel_stage = 'BOFU' THEN 1 ELSE 0 END) AS funnel_bofu,
-        SUM(CASE WHEN funnel_stage = 'UNCERTAIN' OR funnel_stage IS NULL THEN 1 ELSE 0 END) AS funnel_uncertain
+        SUM(CASE WHEN funnel_stage = 'UNCERTAIN' OR funnel_stage IS NULL THEN 1 ELSE 0 END) AS funnel_uncertain,
+        SUM(CASE WHEN localizable = true THEN 1 ELSE 0 END) AS localizable_yes,
+        SUM(CASE WHEN localizable = false THEN 1 ELSE 0 END) AS localizable_no
     FROM {GOLD_TABLE_FULL}
     WHERE content_type = '{CONTENT_TYPE}'
     GROUP BY site_id
@@ -530,8 +663,9 @@ if sample_id is None:
         sample_id = df_any.first()["id"]
 
 if sample_id:
-    print(f"Test AI_QUERY 2 etapes pour l'item ID={sample_id}")
+    print(f"Test AI_QUERY 3 etapes pour l'item ID={sample_id}")
     ai_prompt_markdown_escaped = AI_PROMPT_MARKDOWN.replace("'", "''")
+    ai_prompt_cleanup_escaped = AI_PROMPT_CLEANUP.replace("'", "''")
     ai_prompt_classification_escaped = AI_PROMPT_CLASSIFICATION.replace("'", "''")
 
     df_test = spark.sql(f"""
@@ -539,45 +673,87 @@ if sample_id:
             SELECT
                 id,
                 title,
+                meta_description,
+                excerpt,
                 AI_QUERY(
                     '{AI_MODEL}',
                     CONCAT('{ai_prompt_markdown_escaped}', raw_json)
                 ) AS markdown_content
             FROM {GOLD_TABLE_FULL}
             WHERE id = {sample_id}
+        ),
+        cleanup_result AS (
+            SELECT
+                id,
+                title,
+                meta_description,
+                excerpt,
+                markdown_content,
+                AI_QUERY(
+                    '{AI_MODEL}',
+                    CONCAT('{ai_prompt_cleanup_escaped}', markdown_content)
+                ) AS cleaned_content
+            FROM markdown_result
+        ),
+        with_excerpt AS (
+            SELECT
+                *,
+                CASE WHEN excerpt IS NOT NULL AND excerpt != ''
+                    THEN CONCAT(excerpt, '\\n\\n', cleaned_content)
+                    ELSE cleaned_content
+                END AS final_content
+            FROM cleanup_result
         )
         SELECT
             id,
             title,
+            meta_description,
+            excerpt,
             markdown_content,
+            cleaned_content,
+            final_content,
             AI_QUERY(
                 '{AI_MODEL}',
-                CONCAT('{ai_prompt_classification_escaped}', markdown_content)
+                CONCAT(
+                    '{ai_prompt_classification_escaped}',
+                    'Title: ', COALESCE(title, ''), '\\n',
+                    'Meta description: ', COALESCE(meta_description, ''), '\\n',
+                    'Content:\\n', final_content
+                )
             ) AS classification_raw_response
-        FROM markdown_result
+        FROM with_excerpt
     """)
 
     for row in df_test.collect():
         markdown = str(row["markdown_content"])
+        cleaned = str(row["cleaned_content"])
+        final = str(row["final_content"])
         raw_classification = str(row["classification_raw_response"])
-        print(f"\n--- Markdown nettoye (ID={row['id']}, title={row['title']}) ---")
-        print(markdown)
+        print(f"\n--- Markdown brut (ID={row['id']}, title={row['title']}) ---")
+        print(markdown[:500])
+        print(f"\n--- Excerpt ---")
+        print(str(row["excerpt"]))
+        print(f"\n--- Contenu nettoye (CTA/sommaires supprimes) ---")
+        print(cleaned[:500])
+        print(f"\n--- Contenu final (avec excerpt reinscrit) ---")
+        print(final[:500])
         print(f"\n--- Reponse brute classification ---")
         print(raw_classification)
 
         # Nettoyage des markdown fences avant parsing JSON
         import re
-        cleaned = re.sub(r'^\s*```[a-z]*\s*', '', raw_classification)
-        cleaned = re.sub(r'\s*```\s*$', '', cleaned)
+        cleaned_json = re.sub(r'^\s*```[a-z]*\s*', '', raw_classification)
+        cleaned_json = re.sub(r'\s*```\s*$', '', cleaned_json)
         print(f"\n--- Classification nettoyee (fences supprimees) ---")
-        print(cleaned)
+        print(cleaned_json)
         print(f"\n--- Tentative de parsing GET_JSON_OBJECT ---")
-        cleaned_escaped = cleaned.replace("'", "''")
+        cleaned_escaped = cleaned_json.replace("'", "''")
         df_parse = spark.sql(f"""
             SELECT
                 GET_JSON_OBJECT('{cleaned_escaped}', '$.funnel_stage') AS funnel_stage,
                 GET_JSON_OBJECT('{cleaned_escaped}', '$.has_regulatory_content') AS has_regulatory,
-                GET_JSON_OBJECT('{cleaned_escaped}', '$.has_country_specific_context') AS has_country
+                GET_JSON_OBJECT('{cleaned_escaped}', '$.has_country_specific_context') AS has_country,
+                GET_JSON_OBJECT('{cleaned_escaped}', '$.contains_infographics') AS has_infographics
         """)
         display(df_parse)
 else:
